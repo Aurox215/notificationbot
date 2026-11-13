@@ -7,3 +7,15 @@ token.json
 *.db
 *.sqlite
 *.sqlite3
+dist/
+coverage/
+data/
+*.db-*
+*.sqlite-*
+*.sqlite3-*
+*.log
+oauth-tokens*.json
+client_secret*.json
+*.sqlite.lock
+*.sqlite3.lock
+*.db.lock

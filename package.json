@@ -1,16 +1,29 @@
 {
   "name": "bidbot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Freelance job alerts from official emails to Telegram",
+  "private": true,
+  "main": "dist/src/cli/test-telegram.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node dist/src/main.js",
+    "dev": "npm run build && npm start",
+    "demo": "npm run build && node dist/src/cli/demo.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "telegram:test": "npm run build && node dist/src/cli/test-telegram.js",
+    "telegram:preview": "npm run build && node dist/src/cli/test-telegram.js --dry-run"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": { "node": ">=26.13.1 <27" },
   "dependencies": {
     "dotenv": "^18.0.10"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }
