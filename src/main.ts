@@ -11,6 +11,7 @@ import { createSources } from './sources/registry.js';
 import { log } from './logging/logger.js';
 import { startIngestionServer } from './ingestion/server.js';
 import type { Server } from 'node:http';
+import { AccountLinks } from './ingestion/accounts.js';
 
 async function main(): Promise<void> {
   config({ quiet: true });
@@ -28,10 +29,11 @@ async function main(): Promise<void> {
   try {
     store = new Store(settings.databasePath, settings.keywords);
     store.setState('source_mode', settings.sourceMode);
-    if (settings.ingestion) ingestionServer = await startIngestionServer(store, settings.ingestion);
+    const accounts = settings.ingestion ? new AccountLinks(store, settings.ingestion.botUsername) : undefined;
+    if (settings.ingestion) ingestionServer = await startIngestionServer(store, settings.ingestion, accounts);
     const client = new TelegramClient(settings.telegram);
     const monitor = new Monitor(store, createSources(settings.sourceMode), client, 1100, settings.sourceOptions);
-    const commands = new CommandHandler(store, client, settings.intervalMs, settings.healthStaleMs);
+    const commands = new CommandHandler(store, client, settings.intervalMs, settings.healthStaleMs, accounts);
     log('info', `Bot started in ${settings.sourceMode.toUpperCase()} mode; shared dispatch interval ${settings.intervalMs} ms. No live platform requests.`);
     const tasks = [runPolling(client, commands, store, controller.signal), runScheduler(monitor, settings.intervalMs, controller.signal)];
     try { await Promise.all(tasks); } finally { controller.abort(); await Promise.allSettled(tasks); }

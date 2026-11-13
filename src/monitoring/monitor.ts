@@ -33,8 +33,12 @@ export class Monitor {
         if (projects) for (const project of projects) this.store.saveProject(project);
       }
       // Re-evaluate stored fixtures for new subscribers or changed preferences.
-      for (const { id: projectId, project } of this.store.projects(true, this.store.getState('source_mode') === 'extension' ? 'extension' : undefined)) {
-        for (const initialUser of this.store.users()) {
+      // Browser projects are selected by owner. Legacy unowned browser rows never dispatch.
+      const shared = this.store.getState('source_mode') === 'extension' ? [] : this.store.projects(true, 'monitor');
+      for (const initialUser of this.store.users()) {
+        const candidates = [...shared.map(p => ({ ...p, owned: false })),
+          ...this.store.browserProjects(initialUser.id).map(p => ({ ...p, owned: true }))];
+        for (const { id: projectId, project, owned } of candidates) {
           if (signal.aborted) return;
           const waitMs = this.nextSendAt - Date.now();
           if (waitMs > 0) {
@@ -43,23 +47,26 @@ export class Monitor {
           // Commands may change preferences while a send is waiting.
           const user = this.store.user(initialUser.id)!;
           if (!user.subscribed || user.paused || !user.platforms.includes(project.platform) || !matchesKeywords(project, user.keywords)) continue;
-          this.store.enqueue(user.id, projectId);
-          if (!this.store.claim(user.id, projectId)) continue;
+          const enqueue = owned ? this.store.enqueueOwned.bind(this.store) : this.store.enqueue.bind(this.store);
+          const claim = owned ? this.store.claimOwned.bind(this.store) : this.store.claim.bind(this.store);
+          const finish = owned ? this.store.finishOwned.bind(this.store) : this.store.finish.bind(this.store);
+          enqueue(user.id, projectId);
+          if (!claim(user.id, projectId)) continue;
           this.nextSendAt = Date.now() + this.sendSpacingMs;
           try {
             await this.messenger.send(formatAlert(project), user.chatId);
-            this.store.finish(user.id, projectId, 'sent');
+            finish(user.id, projectId, 'sent');
           } catch (error) {
             if (error instanceof TelegramError && error.code === 429) {
               const retryAt = Date.now() + error.retryAfter * 1000;
               this.nextSendAt = retryAt;
-              this.store.finish(user.id, projectId, 'pending', retryAt);
+              finish(user.id, projectId, 'pending', retryAt);
             } else if (error instanceof TelegramError && error.code >= 400 && error.code < 500) {
-              this.store.finish(user.id, projectId, 'failed');
+              finish(user.id, projectId, 'failed');
               if (error.code === 403) this.store.preferences(user.id, { paused: true });
             } else {
               // Unknown outcome: avoid automatically duplicating a possibly delivered alert.
-              this.store.finish(user.id, projectId, 'unknown');
+              finish(user.id, projectId, 'unknown');
             }
             log('error', 'Project notification failed; delivery state recorded.', {
               event: 'notification.failed', platform: project.platform,

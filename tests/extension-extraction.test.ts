@@ -31,6 +31,15 @@ test('Guru fixture extracts canonical URLs and leaves missing information absent
   assert.equal(scan.payload!.projects[1]!.description, undefined);
   assert.equal(validateScan(scan.payload).projects.length, 2);
 });
+test('extraction distinguishes visible links with unsupported card layout from an empty page', () => {
+  const document = parseHTML('<html><body><div class="unknown-layout"><h2><a href="/freelance-jobs/python-api-999">Python API</a></h2></div></body></html>').document as unknown as Document;
+  const result = extractProjects(document, 'https://www.peopleperhour.com/freelance-jobs');
+  assert.equal(result.status, 'no_projects');
+  assert.equal(result.diagnostics!.visibleProjectLinks, 1);
+  assert.equal(result.diagnostics!.matchedCards, 0);
+  assert.match(result.detail, /layout was not recognized/);
+  assert.equal(result.payload, undefined);
+});
 test('login, verification, unsupported and empty pages never produce an ingestion payload', () => {
   assert.equal(extractProjects(fixture('login.html'), 'https://www.guru.com/work/').status, 'login_required');
   assert.equal(extractProjects(fixture('login.html'), 'https://www.guru.com/login.aspx?ReturnUrl=/work/').status, 'login_required');

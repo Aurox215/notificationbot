@@ -1,10 +1,13 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Freelance scanner</title><link rel="stylesheet" href="popup.css"></head>
-<body><h1>Freelance scanner</h1><p>Manual scans only. Open or refresh pages yourself.</p>
-<dl><dt>Website</dt><dd id="website">Checking…</dd><dt>Detected on last scan</dt><dd id="count">0</dd><dt>Last accepted extraction</dt><dd id="lastSuccess">Never</dd><dt>Backend connection</dt><dd id="connection">Checking…</dd></dl>
+<html lang="en"><head><meta charset="utf-8"><title>Aurox Job Monitor</title><link rel="stylesheet" href="popup.css"></head>
+<body><h1>Aurox Job Monitor</h1><p>Alerts from your own browser to your own Telegram.</p>
+<button id="connect" type="button">Connect Telegram</button> <button id="disconnect" type="button">Disconnect</button>
+<p id="confirmation" role="status"></p>
+<dl><dt>Website</dt><dd id="website">Checking...</dd><dt>Detected projects</dt><dd id="count">0</dd>
+<dt>Last accepted scan</dt><dd id="lastSuccess">Never</dd><dt>Telegram connection</dt><dd id="connection">Checking...</dd></dl>
+<p id="connectionChecked">Connection has not been checked.</p>
+<button id="check" type="button">Check connection</button>
+<p id="attempt">No scan attempted.</p><p id="diagnostics"></p>
 <p id="status" role="status">Ready.</p><button id="scan" type="button">Scan Now</button>
-<details><summary>Local backend pairing</summary><p>Enter your backend's ingestion token and port. No extension ID is needed.</p>
-<form id="pairing"><label for="port">127.0.0.1 port</label><input id="port" type="number" min="1024" max="65535" value="4318" required>
-<label for="token">Separate ingestion token</label><input id="token" type="password" minlength="32" maxlength="128" autocomplete="off" required>
-<p>Never enter your Telegram bot token here.</p><button type="submit">Save pairing &amp; test</button></form></details>
+<p>Watches changes on visible listing pages. Does not refresh or retrieve listings.</p>
 <script src="dist/popup.js"></script></body></html>

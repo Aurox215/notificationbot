@@ -26,6 +26,25 @@ export class Store {
         PRIMARY KEY(user_id, project_id));
       CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ingestion_baselines (platform TEXT PRIMARY KEY, initialized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE IF NOT EXISTS browser_projects (
+        id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), platform TEXT NOT NULL,
+        source_id TEXT NOT NULL, payload TEXT NOT NULL, notify INTEGER NOT NULL,
+        UNIQUE(user_id,platform,source_id), UNIQUE(user_id,id));
+      CREATE TABLE IF NOT EXISTS browser_baselines (
+        user_id TEXT NOT NULL REFERENCES users(id), platform TEXT NOT NULL, PRIMARY KEY(user_id,platform));
+      CREATE TABLE IF NOT EXISTS browser_notifications (
+        user_id TEXT NOT NULL, project_id INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,project_id),
+        FOREIGN KEY(user_id,project_id) REFERENCES browser_projects(user_id,id));
+      CREATE TABLE IF NOT EXISTS pairing_requests (
+        id TEXT PRIMARY KEY, link_hash TEXT NOT NULL UNIQUE, poll_hash TEXT NOT NULL,
+        confirmation_code TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL,
+        user_id TEXT REFERENCES users(id), approved INTEGER NOT NULL DEFAULT 0, claimed INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS extension_sessions (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), token_hash TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+      UPDATE browser_notifications SET state='unknown' WHERE state='sending';
       UPDATE notifications SET state='unknown' WHERE state='sending';`);
     const columns = this.db.prepare('PRAGMA table_info(projects)').all().map(row => row.name);
     if (!columns.includes('notify')) this.db.exec('ALTER TABLE projects ADD COLUMN notify INTEGER NOT NULL DEFAULT 1');
@@ -55,12 +74,84 @@ export class Store {
       .run(project.platform, project.sourceId, JSON.stringify(project), Number(options.notify ?? true), options.origin ?? 'monitor');
     return Number(this.db.prepare('SELECT id FROM projects WHERE platform=? AND source_id=?').get(project.platform, project.sourceId)!.id);
   }
-  projects(notifiableOnly = false, origin?: 'extension'): { id: number; project: SourceProject }[] {
+  projects(notifiableOnly = false, origin?: 'extension' | 'monitor'): { id: number; project: SourceProject }[] {
     return (this.db.prepare('SELECT id,payload FROM projects WHERE (?=0 OR notify=1) AND (? IS NULL OR origin=?)').all(Number(notifiableOnly), origin ?? null, origin ?? null) as { id: number; payload: string }[]).map(row => {
       const data = JSON.parse(row.payload) as SourceProject;
       return { id: row.id, project: { ...data, detectedAt: new Date(data.detectedAt) } };
     });
   }
+  ingestOwned(userId: string, platform: Platform, projects: SourceProject[]) {
+    if (!this.user(userId) || !projects.length || projects.some(p => p.platform !== platform)) throw new Error('Invalid owned batch.');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const baseline = !this.db.prepare('SELECT 1 FROM browser_baselines WHERE user_id=? AND platform=?').get(userId, platform);
+      let inserted = 0;
+      for (const project of projects) {
+        inserted += Number(this.db.prepare(`INSERT OR IGNORE INTO browser_projects(user_id,platform,source_id,payload,notify) VALUES(?,?,?,?,?)`)
+          .run(userId, platform, project.sourceId, JSON.stringify(project), Number(!baseline)).changes);
+      }
+      this.db.prepare('INSERT OR IGNORE INTO browser_baselines(user_id,platform) VALUES(?,?)').run(userId, platform);
+      this.db.exec('COMMIT');
+      return { baseline, received: projects.length, inserted };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  browserProjects(userId: string, includeBaseline = false): { id: number; project: SourceProject }[] {
+    return (this.db.prepare('SELECT id,payload FROM browser_projects WHERE user_id=? AND (?=1 OR notify=1)')
+      .all(userId, Number(includeBaseline)) as { id: number; payload: string }[]).map(row => {
+        const project = JSON.parse(row.payload) as SourceProject;
+        return { id: row.id, project: { ...project, detectedAt: new Date(project.detectedAt) } };
+      });
+  }
+  enqueueOwned(userId: string, projectId: number): void {
+    this.db.prepare('INSERT OR IGNORE INTO browser_notifications(user_id,project_id) VALUES(?,?)').run(userId, projectId);
+  }
+  claimOwned(userId: string, projectId: number): boolean {
+    return this.db.prepare(`UPDATE browser_notifications SET state='sending',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP
+      WHERE user_id=? AND project_id=? AND state='pending' AND retry_at<=? AND attempts<5`).run(userId, projectId, Date.now()).changes === 1;
+  }
+  finishOwned(userId: string, projectId: number, state: 'sent' | 'unknown' | 'failed' | 'pending', retryAt = 0): void {
+    this.db.prepare(`UPDATE browser_notifications SET state=CASE WHEN ?='pending' AND attempts>=5 THEN 'failed' ELSE ? END,
+      retry_at=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND project_id=?`).run(state, state, retryAt, userId, projectId);
+  }
+  createPairing(id: string, linkHash: string, pollHash: string, code: string, expiresAt: number, now: number): void {
+    this.db.prepare('DELETE FROM pairing_requests WHERE expires_at<=?').run(now);
+    this.db.prepare('INSERT INTO pairing_requests(id,link_hash,poll_hash,confirmation_code,expires_at) VALUES(?,?,?,?,?)').run(id, linkHash, pollHash, code, expiresAt);
+  }
+  proposePairing(linkHash: string, userId: string, now: number): string | undefined {
+    this.db.prepare(`UPDATE pairing_requests SET user_id=? WHERE link_hash=? AND expires_at>? AND approved=0 AND claimed=0
+      AND (user_id IS NULL OR user_id=?)`).run(userId, linkHash, now, userId);
+    return this.db.prepare('SELECT confirmation_code FROM pairing_requests WHERE link_hash=? AND user_id=? AND expires_at>? AND approved=0 AND claimed=0')
+      .get(linkHash, userId, now)?.confirmation_code as string | undefined;
+  }
+  approvePairing(userId: string, code: string, now: number): boolean {
+    return this.db.prepare('UPDATE pairing_requests SET approved=1 WHERE user_id=? AND confirmation_code=? AND expires_at>? AND approved=0 AND claimed=0')
+      .run(userId, code, now).changes === 1;
+  }
+  claimPairing(id: string, pollHash: string, sessionId: string, tokenHash: string, sessionExpiresAt: number, now: number): 'pending' | 'invalid' | 'connected' {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db.prepare('SELECT user_id,approved FROM pairing_requests WHERE id=? AND poll_hash=? AND expires_at>? AND claimed=0')
+        .get(id, pollHash, now) as { user_id: string | null; approved: number } | undefined;
+      let result: 'pending' | 'invalid' | 'connected' = 'invalid';
+      if (row && !row.approved) result = 'pending';
+      else if (row?.user_id) {
+        this.db.prepare('UPDATE pairing_requests SET claimed=1 WHERE id=?').run(id);
+        this.db.prepare('INSERT INTO extension_sessions(id,user_id,token_hash,expires_at) VALUES(?,?,?,?)').run(sessionId, row.user_id, tokenHash, sessionExpiresAt);
+        result = 'connected';
+      }
+      this.db.exec('COMMIT'); return result;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  sessionUser(tokenHash: string, now: number): string | undefined {
+    return this.db.prepare('SELECT user_id FROM extension_sessions WHERE token_hash=? AND expires_at>? AND revoked=0').get(tokenHash, now)?.user_id as string | undefined;
+  }
+  revokeSession(tokenHash: string): void { this.db.prepare('UPDATE extension_sessions SET revoked=1 WHERE token_hash=?').run(tokenHash); }
+  disconnectUser(userId: string): void {
+    this.db.prepare('UPDATE extension_sessions SET revoked=1 WHERE user_id=?').run(userId);
+    this.db.prepare('DELETE FROM pairing_requests WHERE user_id=?').run(userId);
+  }
+  // Legacy unowned input is retained for old database compatibility only. HTTP never
+  // calls this method, and Monitor excludes these extension rows from all dispatch.
   ingest(platform: Platform, projects: SourceProject[]): { baseline: boolean; received: number; inserted: number } {
     if (!projects.length || projects.some(p => p.platform !== platform)) throw new Error('Invalid ingestion batch.');
     this.db.exec('BEGIN IMMEDIATE');
@@ -91,7 +182,9 @@ export class Store {
       .run(state, state, retryAt, userId, projectId);
   }
   history(userId: string): { state: string; count: number }[] {
-    const rows = this.db.prepare('SELECT state,COUNT(*) AS count FROM notifications WHERE user_id=? GROUP BY state').all(userId) as { state: string; count: number }[];
+    const rows = this.db.prepare(`SELECT state,SUM(count) AS count FROM (
+      SELECT state,COUNT(*) AS count FROM notifications WHERE user_id=? GROUP BY state UNION ALL
+      SELECT state,COUNT(*) AS count FROM browser_notifications WHERE user_id=? GROUP BY state) GROUP BY state`).all(userId, userId) as { state: string; count: number }[];
     return rows.map(row => ({ state: row.state, count: row.count }));
   }
   getState(key: string): string | undefined { return this.db.prepare('SELECT value FROM state WHERE key=?').get(key)?.value as string | undefined; }

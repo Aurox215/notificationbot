@@ -8,7 +8,9 @@ export function monitoringHealth(reader: HealthReader, staleMs: number, now = Da
   const cycleRaw = reader.getState('monitoring_cycle');
   const cycle = cycleRaw ? JSON.parse(cycleRaw) as CycleHealth : null;
   const mode = reader.getState('source_mode') === 'extension' ? 'extension' as const : 'mock' as const;
-  const sources = platforms.map(platform => {
+  // In extension mode no shared source freshness exists. Per-user browser data is
+  // intentionally excluded from this operator scheduler-health report.
+  const sources = (mode === 'extension' ? [] : platforms).map(platform => {
     const raw = reader.getState(sourceHealthKey(platform));
     const health = raw ? JSON.parse(raw) as SourceHealth : initialHealth(platform);
     const stale = health.lastSuccessAt === null || now - health.lastSuccessAt > staleMs || health.lastSuccessAt > now;

@@ -2,9 +2,10 @@ import { listingPlatform, canonicalProject } from '../../src/ingestion/identity.
 import type { ScanPayload, ExtractedProject } from '../../src/ingestion/schema.js';
 
 export interface Extraction {
-  status: 'ok' | 'login_required' | 'verification_required' | 'no_projects' | 'unsupported';
+  status: 'ok' | 'login_required' | 'verification_required' | 'no_projects' | 'unsupported' | 'extraction_failed';
   detail: string;
   payload?: ScanPayload;
+  diagnostics?: { linksChecked: number; visibleProjectLinks: number; matchedCards: number; extractedProjects: number };
 }
 export function visible(element: Element): boolean {
   for (let node: Element | null = element; node; node = node.parentElement) {
@@ -42,13 +43,18 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
   const platform = listingPlatform(pageUrl);
   if (!platform) return { status: 'unsupported', detail: 'Scan only /freelance-jobs or /work/ listing pages.' };
   const projects = new Map<string, ExtractedProject>();
+  const diagnostics = { linksChecked: 0, visibleProjectLinks: 0, matchedCards: 0, extractedProjects: 0 };
   for (const anchor of Array.from(document.querySelectorAll('a[href]'))) {
+    diagnostics.linksChecked++;
     if (!visible(anchor)) continue;
     let identity;
     try { identity = canonicalProject(new URL(anchor.getAttribute('href')!, pageUrl).href, platform); } catch { continue; }
-    if (!identity || projects.has(identity.sourceId)) continue;
+    if (!identity) continue;
+    diagnostics.visibleProjectLinks++;
+    if (projects.has(identity.sourceId)) continue;
     const card = anchor.closest('[data-project-id],[data-job-id],.project-card,.job-card,.job-listing,.job-listing-item,.list-group-item,article');
     if (!card || !visible(card)) continue;
+    diagnostics.matchedCards++;
     const titleAnchor = Array.from(card.querySelectorAll('h2 a,h3 a,.project-title a,.job-title a,a[data-project-title]')).find(a => {
       try { return canonicalProject(new URL(a.getAttribute('href')!, pageUrl).href, platform)?.sourceId === identity!.sourceId && visible(a); } catch { return false; }
     });
@@ -68,6 +74,9 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
     projects.set(project.sourceId, project);
     if (projects.size >= 100) break;
   }
-  if (!projects.size) return { status: 'no_projects', detail: 'No supported visible project cards found. Wait for normal loading and scan again; the page layout may need a selector update. No baseline was created.' };
-  return { status: 'ok', detail: 'Visible project cards extracted.', payload: { platform, pageUrl: `${url.origin}${url.pathname}`, projects: [...projects.values()] } };
+  diagnostics.extractedProjects = projects.size;
+  if (!projects.size) return { status: 'no_projects', diagnostics, detail: diagnostics.visibleProjectLinks > 0 ?
+    'Zero projects extracted: visible project links were found, but the card/title layout was not recognized. A selector update may be needed. Nothing was submitted.' :
+    'Zero supported visible project links found. Wait for normal page loading and scan again. Nothing was submitted and no baseline was created.' };
+  return { status: 'ok', diagnostics, detail: 'Visible project cards extracted.', payload: { platform, pageUrl: `${url.origin}${url.pathname}`, projects: [...projects.values()] } };
 }

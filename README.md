@@ -1,180 +1,125 @@
-# Freelance Job Alert Bot
+# Aurox Job Monitor
 
-Get freelance project alerts in Telegram, filtered by each user's keywords and preferred platform.
+Receive Telegram alerts for freelance projects detected in **your own Chrome browser**.
 
-The bot supports PeoplePerHour and Guru project data, multiple Telegram users, and SQLite storage to prevent duplicate alerts.
+Each extension installation connects securely to its user's Telegram account. Your browser's projects are sent only to you, using your own keywords and platform preferences.
 
-## What works today?
+## Current status
 
-| Mode | What it does |
-| --- | --- |
-| **Mock** | Sends sample projects so you can test the bot. This is the default. |
-| **Chrome extension** | Reads visible project cards when you click **Scan Now** on a page you opened yourself. |
+The backend, one-time Telegram linking, per-user storage, notification routing, and browser observation are implemented. **A cloud backend has not been deployed.** The current default extension build is for local operator testing.
 
-**Automatic website monitoring is not enabled.** The extension does not refresh pages, log in, or bypass verification. Its extraction rules pass synthetic HTML tests but still need confirmation against the actual website layouts.
+The operator must deploy an approved HTTPS service and distribute an extension built for that service before ordinary users can use it without local setup. No paid service or deployment has been introduced.
 
-## 1. Install and configure
+## User experience
 
-Open PowerShell in this project folder. Use Node.js **26.13.1** with NVM for Windows:
+With a configured release extension:
 
-```powershell
-nvm install 26.13.1
-nvm use 26.13.1
-npm.cmd ci
-```
+1. Install **Aurox Job Monitor** and click **Connect Telegram**.
+2. Open the Telegram tab created by the extension.
+3. Compare the code in Telegram with the code in your extension. If you initiated the connection and the codes match, send `/confirm CODE`.
+4. Return to the extension to finish connecting.
+5. Open PeoplePerHour or Guru in your Chrome browser. Complete any normal login or verification yourself.
 
-Create your local settings file only if it does not already exist:
+Users do not run Node.js, edit .env files, enter extension IDs or ingestion tokens, or share freelance-site passwords.
 
-```powershell
-if (!(Test-Path .env)) { Copy-Item .env.example .env }
-```
+The extension observes changes to visible project cards. **Scan Now** is also available. The first accepted batch for each user and platform is saved silently. Later unseen projects can produce matching alerts only for that user.
 
-Create a Telegram bot using **@BotFather**, then edit these values in `.env`:
+## What observation does
 
-```dotenv
-TELEGRAM_BOT_TOKEN=your_bot_token
-SOURCE_MODE=mock
-```
+- Reads supported visible cards already loaded by the website.
+- Notices DOM changes while the tab is visible.
+- Sends metadata using that installation's authenticated session.
+- Leaves login, CAPTCHA and verification screens untouched.
 
-Keep your token private. Leave the other settings at their defaults for your first test.
+**Observation does not refresh the page or retrieve new listings.** If the website does not update its cards, manually refresh it normally. No 30-second refresh/retrieval is enabled: platform permission and a permitted frequency remain unverified.
 
-## 2. Start the bot
-
-```powershell
-npm.cmd run dev
-```
-
-Keep this terminal open. Stop the bot with **Ctrl+C**.
-
-Open a private Telegram chat with your bot and send:
-
-```text
-/start
-/subscribe
-```
-
-In mock mode, you should receive sample projects marked **[MOCK]**. Repeated monitoring cycles will not resend the same project to the same user.
-
-To try filtering, send:
-
-```text
-/keywords Python, React
-/platforms PeoplePerHour,Guru
-/status
-```
-
-Each user has separate preferences. Groups and channels are not supported.
-
-## 3. Use the Chrome extension
-
-Follow the [extension setup and pairing guide](extension/README.md) for full instructions.
-
-1. Run `npm.cmd run build`.
-2. Open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
-3. Select this project's **extension** folder.
-4. Generate a separate ingestion token as explained in the guide. No extension ID registration is needed.
-5. Add these settings to your existing `.env`:
-
-```dotenv
-SOURCE_MODE=extension
-INGESTION_ENABLED=true
-INGESTION_PORT=4318
-INGESTION_TOKEN=your_separate_random_ingestion_token
-```
-
-Replace the placeholders, restart the bot, and enter the same ingestion token and port in the extension popup. **Never enter your Telegram bot token in the extension.**
-
-Open one of these pages normally in Chrome:
-
-- [PeoplePerHour projects](https://www.peopleperhour.com/freelance-jobs)
-- [Guru work](https://www.guru.com/work/)
-
-Complete any login or verification yourself. When listings are visible, click **Scan Now**.
-
-**The first accepted batch for each platform is saved without sending alerts.** Later scans can notify subscribers about previously unseen projects. Repeated scans and restarts preserve duplicate protection.
-
-Refresh pages and scan manually. An older project that appears for the first time can also trigger an alert; the bot detects newly observed projects, not guaranteed newly published ones.
-
-The backend must run on the same computer as Chrome for this local prototype. Extension mode does not generate mock projects.
+Extraction rules are tested against saved synthetic HTML fixtures. Actual account-page layouts may require selector adjustments. A newly observed project can be older than its detection time.
 
 ## Telegram commands
 
 | Command | Action |
 | --- | --- |
-| `/start` | Register your chat and show help |
+| `/start` | Register your private chat and show help |
+| `/confirm CODE` | Approve the browser connection whose code matches yours |
+| `/disconnect` | Revoke all your browser sessions |
 | `/subscribe` | Enable alerts |
 | `/pause` | Pause alerts |
 | `/resume` | Resume an existing subscription |
-| `/keywords` | Show your keywords |
-| `/keywords Python, React` | Replace your keywords |
+| `/keywords Python, React` | Set keywords; any matching keyword is sufficient |
 | `/keywords all` | Match all projects |
-| `/platforms` | Show your selected platforms |
-| `/platforms Guru` | Select one platform; use a comma to select both |
+| `/platforms PeoplePerHour,Guru` | Select platforms |
 | `/platforms all` | Enable both platforms |
-| `/status` | Show preferences, delivery counts, and source health |
+| `/status` | Show your preferences and delivery counts |
 | `/help` | Show command help |
 
-A project matches if **any** keyword appears in its title, description, category, or skills. Matching ignores letter case. Previously stored, eligible projects may be sent after you subscribe or change preferences; the extension's initial baseline always stays silent.
+Use `/keywords` or `/platforms` without arguments to view preferences. Linking explicitly enables/resumes your subscription. Private chats are supported; group/channel messages cannot approve a link.
 
-## Testing and useful commands
+## Operator development setup
 
-Run these checks without contacting the freelance websites or Telegram:
+These steps are for the developer/operator, **not end users**.
+
+Use Node.js 26.13.1 with NVM for Windows:
 
 ```powershell
+nvm install 26.13.1
+nvm use 26.13.1
+npm.cmd ci
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Configure your existing Telegram bot token in .env. For local account-linking development, add:
+
+```dotenv
+TELEGRAM_BOT_USERNAME=YourBotUsername
+SOURCE_MODE=extension
+INGESTION_ENABLED=true
+INGESTION_PORT=4318
+PUBLIC_BASE_URL=http://127.0.0.1:4318
+```
+
+Set the username to the bot belonging to TELEGRAM_BOT_TOKEN, without @. Keep the existing database path. Old INGESTION_TOKEN and INGESTION_EXTENSION_ID settings are ignored.
+
+```powershell
+npm.cmd run dev
+```
+
+Load the built **extension** folder through chrome://extensions → Developer mode → Load unpacked. Reopen or manually refresh an existing website tab after reloading the extension. Test Connect Telegram using your normal Telegram account.
+
+For hosted release configuration, see [account linking and cloud preparation](docs/account-linking.md). The backend stays on loopback behind a same-host HTTPS reverse proxy. Publishing and deployment require separate approval.
+
+## Tests and commands
+
+```powershell
+npm.cmd run build
 npm.cmd run typecheck
 npm.cmd test
-npm.cmd run demo
 ```
+
+Tests use temporary SQLite databases, mocked Telegram updates, saved HTML fixtures and local HTTP requests. They do not use your live freelance accounts or production database.
 
 | Command | Purpose |
 | --- | --- |
-| `npm.cmd run dev` | Build and start the bot |
-| `npm.cmd run build` | Build the backend and extension |
+| `npm.cmd run dev` | Build and start the backend |
 | `npm.cmd start` | Start the existing build |
-| `npm.cmd run health` | Read monitoring health from SQLite |
-| `npm.cmd run telegram:preview` | Print a sample Telegram message |
-| `npm.cmd run telegram:test` | Send a sample to `TELEGRAM_CHAT_ID` |
+| `npm.cmd run demo` | Run the preserved offline multi-user mock demo |
+| `npm.cmd run health` | Check local backend scheduler health |
+| `npm.cmd run telegram:preview` | Print a sample notification |
+| `npm.cmd run telegram:test` | Send a sample to TELEGRAM_CHAT_ID |
 
-The direct Telegram test requires your numeric chat ID in `.env` and a private chat started with the bot. It bypasses subscriptions and duplicate history.
+The manual Telegram test bypasses subscription history. SOURCE_MODE=mock preserves sample adapters; use extension mode for the real per-user service. Health in extension mode describes backend dispatch, not browser freshness or Telegram delivery.
 
-Health checks report local monitoring state, not successful Telegram delivery. In extension mode, source health can become stale simply because you have not scanned recently.
+## Data and security
 
-## Important settings
+SQLite persists private browser projects, baselines, preferences, sessions and delivery histories. The same platform project can have independent private snapshots for different users. The authenticated session determines the owner; submitted chat/user IDs cannot redirect an alert.
 
-See [.env.example](.env.example) for all available settings.
+Old browser data from the administrator-broadcast prototype is retained but excluded from delivery. It is not assigned to users automatically. Existing installations must reconnect through Telegram.
 
-| Setting | Purpose |
-| --- | --- |
-| `TELEGRAM_BOT_TOKEN` | Backend-only Telegram credential |
-| `SOURCE_MODE` | `mock` or `extension` |
-| `DATABASE_PATH` | Persistent SQLite file; default: `data/bidbot.sqlite` |
-| `DEFAULT_KEYWORDS` | Starting keywords for newly registered users |
-| `MONITOR_INTERVAL_MS` | Shared backend cycle; default: `5000` ms |
-| `HEALTH_STALE_MS` | How old a successful check can be before it is stale |
-| `INGESTION_ENABLED` | Enable the local extension endpoint; default: `false` |
+The backend stores hashes of session credentials; the extension keeps its own raw session in trusted local storage. Sessions expire after 30 days and can be revoked. Do not commit .env, tokens or database files. Use persistent disk and one Node worker initially.
 
-In extension mode, the shared cycle dispatches stored projects. **It does not refresh or scan your browser.** Changing default keywords does not overwrite existing users' preferences.
-
-## Troubleshooting
-
-| Problem | What to check |
-| --- | --- |
-| No Telegram alert | Send `/subscribe`, check `/status`, and review keywords/platforms. The first extension batch is intentionally silent. |
-| No projects detected | Confirm listings are visible. Refresh manually after loading the extension. The page may need updated extraction rules. |
-| Login or verification status | Complete normal website access yourself, then scan the listing page again. |
-| Extension cannot connect | Check the backend is running and the port and ingestion token match. No extension ID is required. |
-| Telegram polling error | Use one bot process. A configured webhook or another polling client can prevent polling. |
-| Database lock error | Stop other instances. After a crash, confirm no instance is running before removing only the stale `.lock` file. |
-
-## Data and deployment
-
-SQLite keeps users, preferences, projects, baselines, and notification history across restarts. Do not delete the database to restart the bot or reset a test.
-
-Keep `.env`, tokens, and database files out of Git. Run one process per bot token and database. Uncertain Telegram deliveries are not retried automatically, which avoids possible duplicates but can miss an alert.
-
-For a VPS, install the documented Node version, run `npm ci` and `npm run build`, then supervise `node dist/src/main.js` with systemd or your hosting provider. Use persistent local storage and stop the service before copying the database for a simple backup. The current extension endpoint is localhost-only; it cannot receive scans from Chrome on a different computer.
+A PostgreSQL migration should preserve the repository contracts, owner-qualified keys and transactional claims. Exactly-once Telegram delivery is not guaranteed: uncertain outcomes remain recorded without automatic retries.
 
 ## More information
 
-- [Chrome extension: setup, pairing, security, and testing](extension/README.md)
-- [Live source research and authorization requirements](docs/phase-3-live-sources.md)
+- [Extension user guide](extension/README.md)
+- [Pairing protocol, security, migration and operator cloud setup](docs/account-linking.md)
+- [Platform integration and authorization research](docs/phase-3-live-sources.md)
