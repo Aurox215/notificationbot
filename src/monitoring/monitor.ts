@@ -6,29 +6,34 @@ import { formatAlert } from '../domain/project.js';
 import { matchesKeywords } from '../filtering/keywords.js';
 import { TelegramError } from '../telegram/client.js';
 import { log } from '../logging/logger.js';
+import { SourceRunner, type SourceRunnerOptions } from './source-runner.js';
 
 export class Monitor {
   private running = false;
   private nextSendAt = 0;
+  private readonly sourceRunner: SourceRunner;
   constructor(private readonly store: Store, private readonly sources: ProjectSource[], private readonly messenger: Messenger,
-    private readonly sendSpacingMs = 1100) {}
+    private readonly sendSpacingMs = 1100, sourceOptions: Partial<SourceRunnerOptions> = {}) {
+    if (new Set(sources.map(source => source.platform)).size !== sources.length) throw new Error('Configure exactly one source per platform.');
+    this.sourceRunner = new SourceRunner(store, sourceOptions);
+  }
 
   async tick(signal: AbortSignal): Promise<void> {
     if (this.running || signal.aborted) return;
     this.running = true;
+    const startedAt = Date.now();
+    let ok = false;
     try {
+      const previousRaw = this.store.getState('monitoring_cycle');
+      const previous = previousRaw ? JSON.parse(previousRaw) as { completedAt: number | null; ok: boolean } : undefined;
+      this.store.setState('monitoring_cycle', JSON.stringify({ startedAt, completedAt: previous?.completedAt ?? null, ok: previous?.ok ?? false, running: true }));
       for (const source of this.sources) {
         if (signal.aborted) return;
-        try {
-          const projects = await source.fetchProjects(AbortSignal.any([signal, AbortSignal.timeout(15000)]));
-          for (const project of projects) {
-            if (project.platform !== source.platform || !project.sourceId) throw new Error('Invalid source identity');
-            this.store.saveProject(project);
-          }
-        } catch { if (!signal.aborted) log('error', `${source.platform} source failed; will retry next cycle.`); }
+        const projects = await this.sourceRunner.fetch(source, signal);
+        if (projects) for (const project of projects) this.store.saveProject(project);
       }
       // Re-evaluate stored fixtures for new subscribers or changed preferences.
-      for (const { id: projectId, project } of this.store.projects()) {
+      for (const { id: projectId, project } of this.store.projects(true, this.store.getState('source_mode') === 'extension' ? 'extension' : undefined)) {
         for (const initialUser of this.store.users()) {
           if (signal.aborted) return;
           const waitMs = this.nextSendAt - Date.now();
@@ -56,18 +61,25 @@ export class Monitor {
               // Unknown outcome: avoid automatically duplicating a possibly delivered alert.
               this.store.finish(user.id, projectId, 'unknown');
             }
-            log('error', 'Project notification failed; delivery state recorded.');
+            log('error', 'Project notification failed; delivery state recorded.', {
+              event: 'notification.failed', platform: project.platform,
+              errorCode: error instanceof TelegramError ? `telegram_${error.code}` : 'delivery_unknown',
+            });
           }
         }
       }
-    } finally { this.running = false; }
+      ok = true;
+    } finally {
+      this.running = false;
+      this.store.setState('monitoring_cycle', JSON.stringify({ startedAt, completedAt: Date.now(), ok: ok && !signal.aborted, running: false }));
+    }
   }
 }
 
 export async function runScheduler(monitor: Monitor, intervalMs: number, signal: AbortSignal): Promise<void> {
   while (!signal.aborted) {
     const started = Date.now();
-    try { await monitor.tick(signal); } catch { log('error', 'Monitoring cycle failed; retrying next cycle.'); }
+    try { await monitor.tick(signal); } catch { log('error', 'Monitoring cycle failed; retrying next cycle.', { event: 'monitor.cycle_failed', errorCode: 'cycle_failed' }); }
     try { await delay(Math.max(0, intervalMs - (Date.now() - started)), undefined, { signal }); } catch { break; }
   }
 }

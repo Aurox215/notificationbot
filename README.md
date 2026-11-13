@@ -1,144 +1,180 @@
 # Freelance Job Alert Bot
 
-Multi-user Telegram bot with SQLite preferences/history, independent PeoplePerHour and Guru source interfaces, keyword filtering, a shared scheduler and per-user duplicate detection. **Sources are mock fixtures only. No live freelance website, Gmail or API integration is enabled.** All fixture projects and client information are synthetic.
+Get freelance project alerts in Telegram, filtered by each user's keywords and preferred platform.
 
-## Windows setup
+The bot supports PeoplePerHour and Guru project data, multiple Telegram users, and SQLite storage to prevent duplicate alerts.
 
-Use Node.js 26.13.1 LTS and npm. With NVM for Windows:
+## What works today?
+
+| Mode | What it does |
+| --- | --- |
+| **Mock** | Sends sample projects so you can test the bot. This is the default. |
+| **Chrome extension** | Reads visible project cards when you click **Scan Now** on a page you opened yourself. |
+
+**Automatic website monitoring is not enabled.** The extension does not refresh pages, log in, or bypass verification. Its extraction rules pass synthetic HTML tests but still need confirmation against the actual website layouts.
+
+## 1. Install and configure
+
+Open PowerShell in this project folder. Use Node.js **26.13.1** with NVM for Windows:
 
 ```powershell
 nvm install 26.13.1
 nvm use 26.13.1
 npm.cmd ci
+```
+
+Create your local settings file only if it does not already exist:
+
+```powershell
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-NVM for Windows does not automatically consume .nvmrc. Open a new VS Code terminal if PATH has changed. SQLite uses Node's bundled node:sqlite module; no native npm compilation is needed. Its upstream stability is currently release candidate: keep Node pinned and verify upgrades in tests.
-
-Create a bot through the official @BotFather account and put its token in .env. Existing .env files are not modified; add the new optional settings manually:
+Create a Telegram bot using **@BotFather**, then edit these values in `.env`:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_TIMEOUT_MS=15000
 SOURCE_MODE=mock
-MONITOR_INTERVAL_MS=5000
-DATABASE_PATH=data/bidbot.sqlite
-DEFAULT_KEYWORDS=AI,automation,Python,PHP,Laravel,React,Next.js,Node.js,TypeScript,WordPress,WooCommerce,Shopify,API,full-stack
 ```
 
-TELEGRAM_CHAT_ID is required only by the preserved Phase 1 telegram:test command. The multi-user runtime discovers recipients through private Telegram messages. Default keywords apply to newly registered users; existing preferences persist. The administrator controls the shared interval (1000–3600000 ms). Users cannot change it. Command retrieval uses independent 25-second Telegram long polling.
+Keep your token private. Leave the other settings at their defaults for your first test.
 
-## Verification and startup
-
-Offline verification without credentials or network requests:
-
-```powershell
-npm.cmd run typecheck
-npm.cmd test
-npm.cmd run demo
-npm.cmd run telegram:preview
-```
-
-The demo registers two simulated users with different preferences, delivers one matching fixture to each, and confirms a second cycle sends no duplicates. Tests cover commands, isolation, keyword boundaries, SQLite restart persistence, atomic claims, crash recovery, rate limits, failures, cancellation and persisted polling offsets.
-
-Start the actual Telegram bot:
+## 2. Start the bot
 
 ```powershell
 npm.cmd run dev
 ```
 
-Or run npm.cmd run build once, then npm.cmd start. Stop with Ctrl+C. Only Telegram is contacted; PeoplePerHour/Guru are never fetched.
+Keep this terminal open. Stop the bot with **Ctrl+C**.
 
-In your private chat with the bot:
+Open a private Telegram chat with your bot and send:
 
 ```text
 /start
-/keywords Python
-/platforms PeoplePerHour
 /subscribe
+```
+
+In mock mode, you should receive sample projects marked **[MOCK]**. Repeated monitoring cycles will not resend the same project to the same user.
+
+To try filtering, send:
+
+```text
+/keywords Python, React
+/platforms PeoplePerHour,Guru
 /status
 ```
 
-Within the next cycle you should receive [MOCK] Python AI automation. In a second user's private chat, use /start, /platforms Guru, /subscribe to receive the Guru fixture independently. Wait several cycles and restart with the same database: no repeat alerts should arrive, and preferences/history should persist.
+Each user has separate preferences. Groups and channels are not supported.
 
-Use /pause then /status to verify pause, and /resume to continue. Previously delivered fixtures are not resent. For a new alert in the first chat, use /platforms all and /keywords all to make the unsent Guru fixture eligible. To simulate new projects repeatedly, add a fixture with a new sourceId in a mock adapter and rebuild. Avoid deleting a deployment database to reset testing.
+## 3. Use the Chrome extension
 
-Anyone can register, with no allowlist. Only private chats are supported; groups/channels are ignored. Registration does not automatically subscribe.
+Follow the [extension setup and pairing guide](extension/README.md) for full instructions.
 
-| Command | Behavior |
-| --- | --- |
-| /start | Register private chat; preserve preferences; show help |
-| /subscribe | Enable alerts and clear pause |
-| /pause | Pause without losing history/preferences |
-| /resume | Resume an existing subscription |
-| /keywords | Show keywords |
-| /keywords Python, React, API | Replace keywords: up to 30 values, 60 characters each |
-| /keywords all | Match all projects |
-| /platforms | Show platforms |
-| /platforms PeoplePerHour,Guru | Replace platforms; case-insensitive |
-| /platforms all | Enable both |
-| /status | Show mock mode, preferences, interval and delivery counts |
-| /help | Command usage |
+1. Run `npm.cmd run build`.
+2. Open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.
+3. Select this project's **extension** folder.
+4. Generate a separate ingestion token as explained in the guide. No extension ID registration is needed.
+5. Add these settings to your existing `.env`:
 
-Matching uses any configured literal keyword, case-insensitively, across title, description, category and skills, with letter/number boundaries. AI does not match paid; punctuation in Next.js and C++ is literal. Configure aliases such as React,React.js explicitly. Stored projects are reevaluated after subscription, resume and preference changes, so matching backlog fixtures can be delivered.
-
-## Preserved Phase 1 smoke test
-
-telegram:preview prints the synthetic sample without sending. To use npm.cmd run telegram:test, set TELEGRAM_CHAT_ID to your numeric private chat ID, send /start to your bot, then run the command. It sends directly, bypassing subscriptions/history; repeated manual tests intentionally repeat the sample.
-
-To discover your chat ID, stop the bot first, send it a message, then run locally:
-
-```powershell
-$botSecret = Read-Host 'Bot token' -AsSecureString
-$botCredential = [System.Net.NetworkCredential]::new('', $botSecret)
-$updates = Invoke-RestMethod -Uri ('https://api.telegram.org/bot' + $botCredential.Password + '/getUpdates')
-$updates.result.message.chat.id | Sort-Object -Unique
-Remove-Variable botSecret,botCredential,updates
+```dotenv
+SOURCE_MODE=extension
+INGESTION_ENABLED=true
+INGESTION_PORT=4318
+INGESTION_TOKEN=your_separate_random_ingestion_token
 ```
 
-Do not share the token/response. An existing webhook or another polling client prevents long polling. Use a dedicated bot without a webhook; the app does not silently delete webhooks.
+Replace the placeholders, restart the bot, and enter the same ingestion token and port in the extension popup. **Never enter your Telegram bot token in the extension.**
 
-## Modules and data
+Open one of these pages normally in Chrome:
 
-- src/config: environment validation and central interval
-- src/bot: private-chat commands and durable-offset polling
-- src/telegram: preserved notification client, per-recipient sending and updates
-- src/domain: project model and plain-text formatting
-- src/sources: separate platform contracts/mock adapters
-- src/filtering: per-user literal keyword matching
-- src/persistence: SQLite users/preferences, projects, history and polling state
-- src/monitoring: shared non-overlapping scheduler and dispatch
-- src/logging: timestamped JSON records without tokens/user payloads
-- src/cli: smoke test and offline demo
+- [PeoplePerHour projects](https://www.peopleperhour.com/freelance-jobs)
+- [Guru work](https://www.guru.com/work/)
 
-Schema initializes automatically, with WAL, foreign keys, busy timeout and prepared statements. Project identity is (platform, sourceId); delivery identity is (userId, projectId), enforced by unique constraints. First-observed project snapshots and detection timestamps persist. A SQLite claim precedes each send. A database .lock file prevents a second runtime on the same database. Only one runtime per bot token is supported, even with different databases.
+Complete any login or verification yourself. When listings are visible, click **Scan Now**.
 
-Each source is fetched once per cycle regardless of subscriber count. Cycles never overlap. Project sends are serialized with at least 1.1 seconds between requests. Slow sources or many users extend a cycle beyond the interval; five-second scheduling is not a delivery guarantee. Synchronous SQLite and scans of stored projects suit this initial infrastructure; indexed/batched dispatch and retention are needed before large-scale use.
+**The first accepted batch for each platform is saved without sending alerts.** Later scans can notify subscribers about previously unseen projects. Repeated scans and restarts preserve duplicate protection.
 
-Delivery states:
+Refresh pages and scan manually. An older project that appears for the first time can also trigger an alert; the bot detects newly observed projects, not guaranteed newly published ones.
 
-- pending: eligible, unsent or explicitly rate-limited; respects retry_after, with at most five attempts
-- sending: claimed before Telegram request
-- sent: Telegram acknowledged success
-- failed: explicit non-rate-limit client rejection or exhausted retry budget
-- unknown: network/response uncertainty, server error or interrupted in-flight send recovered after restart
+The backend must run on the same computer as Chrome for this local prototype. Extension mode does not generate mock projects.
 
-Failed/unknown sends are not retried automatically. A timeout may follow successful delivery; avoiding automatic retry prevents a possible duplicate but can miss an alert. Exactly-once delivery is not guaranteed. A 403 pauses that user; other users continue. Command replies are separate from notification history. Preferences are saved before replying; reply failure does not roll them back. Polling retries transient failures with bounded exponential backoff. A crash after handling a command but before storing its offset may repeat its reply; preference changes are idempotent.
+## Telegram commands
 
-## Adding authorized sources later
+| Command | Action |
+| --- | --- |
+| `/start` | Register your chat and show help |
+| `/subscribe` | Enable alerts |
+| `/pause` | Pause alerts |
+| `/resume` | Resume an existing subscription |
+| `/keywords` | Show your keywords |
+| `/keywords Python, React` | Replace your keywords |
+| `/keywords all` | Match all projects |
+| `/platforms` | Show your selected platforms |
+| `/platforms Guru` | Select one platform; use a comma to select both |
+| `/platforms all` | Enable both platforms |
+| `/status` | Show preferences, delivery counts, and source health |
+| `/help` | Show command help |
 
-Implement fetchProjects(signal) separately for each platform, returning stable sourceId, platform, title, detectedAt and source-supplied optional fields. Honor cancellation and timeouts. The model supports category, budget, skills, summary, URL, client rating score, review count and join date; missing fields remain absent. Mock links use example.com.
+A project matches if **any** keyword appears in its title, description, category, or skills. Matching ignores letter case. Previously stored, eligible projects may be sent after you subscribe or change preferences; the extension's initial baseline always stays silent.
 
-Only mock mode is accepted now. Authorized emails, feeds or APIs can be added without changing commands/deduplication. There is no scraping, CAPTCHA bypass, proxy rotation or unverified endpoint integration.
+## Testing and useful commands
 
-## VPS deployment
+Run these checks without contacting the freelance websites or Telegram:
 
-With Node.js 26.13.1, run npm ci and npm run build, then node dist/src/main.js under systemd or a host supervisor. Set its working directory, inject environment variables through a protected file/secret manager, and enable restart backoff. Use one process, not cluster mode. No inbound HTTP port is needed.
+```powershell
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd run demo
+```
 
-Keep DATABASE_PATH on a persistent local disk, not ephemeral or network storage. Run as a dedicated OS user with restrictive file permissions; Telegram IDs/preferences are stored unencrypted. Use a SQLite-aware backup tool, or stop the service before copying the database. Do not copy just the database while WAL writes are active.
+| Command | Purpose |
+| --- | --- |
+| `npm.cmd run dev` | Build and start the bot |
+| `npm.cmd run build` | Build the backend and extension |
+| `npm.cmd start` | Start the existing build |
+| `npm.cmd run health` | Read monitoring health from SQLite |
+| `npm.cmd run telegram:preview` | Print a sample Telegram message |
+| `npm.cmd run telegram:test` | Send a sample to `TELEGRAM_CHAT_ID` |
 
-SIGINT/SIGTERM cancel polling/scheduling and close SQLite after active sends finish (up to the send timeout). A hard kill can leave DATABASE_PATH.lock; confirm no instance is running before removing only that lock. Do not delete the database. Interrupted sending rows become unknown on restart.
+The direct Telegram test requires your numeric chat ID in `.env` and a private chat started with the bot. It bypasses subscriptions and duplicate history.
 
-Never commit .env, OAuth credentials, database/journal files or database locks. Existing secret exclusions are preserved. Revoke exposed Telegram tokens through BotFather. Automated tests mock Telegram; live delivery is verified by the manual steps above.
+Health checks report local monitoring state, not successful Telegram delivery. In extension mode, source health can become stale simply because you have not scanned recently.
 
-References: [Telegram Bot API](https://core.telegram.org/bots/api), [Node.js SQLite](https://nodejs.org/api/sqlite.html).
+## Important settings
+
+See [.env.example](.env.example) for all available settings.
+
+| Setting | Purpose |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Backend-only Telegram credential |
+| `SOURCE_MODE` | `mock` or `extension` |
+| `DATABASE_PATH` | Persistent SQLite file; default: `data/bidbot.sqlite` |
+| `DEFAULT_KEYWORDS` | Starting keywords for newly registered users |
+| `MONITOR_INTERVAL_MS` | Shared backend cycle; default: `5000` ms |
+| `HEALTH_STALE_MS` | How old a successful check can be before it is stale |
+| `INGESTION_ENABLED` | Enable the local extension endpoint; default: `false` |
+
+In extension mode, the shared cycle dispatches stored projects. **It does not refresh or scan your browser.** Changing default keywords does not overwrite existing users' preferences.
+
+## Troubleshooting
+
+| Problem | What to check |
+| --- | --- |
+| No Telegram alert | Send `/subscribe`, check `/status`, and review keywords/platforms. The first extension batch is intentionally silent. |
+| No projects detected | Confirm listings are visible. Refresh manually after loading the extension. The page may need updated extraction rules. |
+| Login or verification status | Complete normal website access yourself, then scan the listing page again. |
+| Extension cannot connect | Check the backend is running and the port and ingestion token match. No extension ID is required. |
+| Telegram polling error | Use one bot process. A configured webhook or another polling client can prevent polling. |
+| Database lock error | Stop other instances. After a crash, confirm no instance is running before removing only the stale `.lock` file. |
+
+## Data and deployment
+
+SQLite keeps users, preferences, projects, baselines, and notification history across restarts. Do not delete the database to restart the bot or reset a test.
+
+Keep `.env`, tokens, and database files out of Git. Run one process per bot token and database. Uncertain Telegram deliveries are not retried automatically, which avoids possible duplicates but can miss an alert.
+
+For a VPS, install the documented Node version, run `npm ci` and `npm run build`, then supervise `node dist/src/main.js` with systemd or your hosting provider. Use persistent local storage and stop the service before copying the database for a simple backup. The current extension endpoint is localhost-only; it cannot receive scans from Chrome on a different computer.
+
+## More information
+
+- [Chrome extension: setup, pairing, security, and testing](extension/README.md)
+- [Live source research and authorization requirements](docs/phase-3-live-sources.md)

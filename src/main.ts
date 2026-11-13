@@ -7,9 +7,10 @@ import { TelegramClient } from './telegram/client.js';
 import { CommandHandler } from './bot/commands.js';
 import { runPolling } from './bot/polling.js';
 import { Monitor, runScheduler } from './monitoring/monitor.js';
-import { MockPeoplePerHourSource } from './sources/peopleperhour.js';
-import { MockGuruSource } from './sources/guru.js';
+import { createSources } from './sources/registry.js';
 import { log } from './logging/logger.js';
+import { startIngestionServer } from './ingestion/server.js';
+import type { Server } from 'node:http';
 
 async function main(): Promise<void> {
   config({ quiet: true });
@@ -23,15 +24,19 @@ async function main(): Promise<void> {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   let store: Store | undefined;
+  let ingestionServer: Server | undefined;
   try {
     store = new Store(settings.databasePath, settings.keywords);
+    store.setState('source_mode', settings.sourceMode);
+    if (settings.ingestion) ingestionServer = await startIngestionServer(store, settings.ingestion);
     const client = new TelegramClient(settings.telegram);
-    const monitor = new Monitor(store, [new MockPeoplePerHourSource(), new MockGuruSource()], client);
-    const commands = new CommandHandler(store, client, settings.intervalMs);
-    log('info', `Bot started in MOCK mode; shared interval ${settings.intervalMs} ms. No live platform requests.`);
+    const monitor = new Monitor(store, createSources(settings.sourceMode), client, 1100, settings.sourceOptions);
+    const commands = new CommandHandler(store, client, settings.intervalMs, settings.healthStaleMs);
+    log('info', `Bot started in ${settings.sourceMode.toUpperCase()} mode; shared dispatch interval ${settings.intervalMs} ms. No live platform requests.`);
     const tasks = [runPolling(client, commands, store, controller.signal), runScheduler(monitor, settings.intervalMs, controller.signal)];
     try { await Promise.all(tasks); } finally { controller.abort(); await Promise.allSettled(tasks); }
   } finally {
+    if (ingestionServer) await new Promise<void>(resolve => ingestionServer!.close(() => resolve()));
     store?.close();
     closeSync(lock);
     unlinkSync(lockPath);

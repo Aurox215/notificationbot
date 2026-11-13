@@ -5,6 +5,7 @@ export interface ProjectAlert {
   budget?: string;
   skills?: string[];
   description?: string;
+  publishedAt?: string;
   url?: string;
   client?: {
     ratingScore?: string;
@@ -20,6 +21,7 @@ export function formatAlert(alert: ProjectAlert): string {
   if (alert.category) lines.push(`Category: ${alert.category}`);
   if (alert.budget) lines.push(`Budget: ${alert.budget}`);
   if (alert.skills?.length) lines.push(`Skills: ${alert.skills.join(', ')}`);
+  if (alert.publishedAt) lines.push(`Published: ${alert.publishedAt}`);
   if (alert.client?.ratingScore !== undefined) lines.push(`Client rating: ${alert.client.ratingScore}`);
   if (alert.client?.ratingCount !== undefined) lines.push(`Client ratings: ${alert.client.ratingCount}`);
   if (alert.client?.reviewCount !== undefined) lines.push(`Client reviews: ${alert.client.reviewCount}`);

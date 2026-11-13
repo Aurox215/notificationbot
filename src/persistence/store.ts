@@ -25,7 +25,11 @@ export class Store {
         retry_at INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(user_id, project_id));
       CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ingestion_baselines (platform TEXT PRIMARY KEY, initialized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
       UPDATE notifications SET state='unknown' WHERE state='sending';`);
+    const columns = this.db.prepare('PRAGMA table_info(projects)').all().map(row => row.name);
+    if (!columns.includes('notify')) this.db.exec('ALTER TABLE projects ADD COLUMN notify INTEGER NOT NULL DEFAULT 1');
+    if (!columns.includes('origin')) this.db.exec("ALTER TABLE projects ADD COLUMN origin TEXT NOT NULL DEFAULT 'monitor'");
   }
   close(): void { this.db.close(); }
   ensureUser(id: string, chatId: string): User {
@@ -46,16 +50,32 @@ export class Store {
     this.db.prepare('UPDATE users SET subscribed=?,paused=?,keywords=?,platforms=? WHERE id=?')
       .run(Number(user.subscribed), Number(user.paused), JSON.stringify(user.keywords), JSON.stringify(user.platforms), id);
   }
-  saveProject(project: SourceProject): number {
-    this.db.prepare('INSERT OR IGNORE INTO projects(platform,source_id,payload) VALUES(?,?,?)')
-      .run(project.platform, project.sourceId, JSON.stringify(project));
+  saveProject(project: SourceProject, options: { notify?: boolean; origin?: 'monitor' | 'extension' } = {}): number {
+    this.db.prepare('INSERT OR IGNORE INTO projects(platform,source_id,payload,notify,origin) VALUES(?,?,?,?,?)')
+      .run(project.platform, project.sourceId, JSON.stringify(project), Number(options.notify ?? true), options.origin ?? 'monitor');
     return Number(this.db.prepare('SELECT id FROM projects WHERE platform=? AND source_id=?').get(project.platform, project.sourceId)!.id);
   }
-  projects(): { id: number; project: SourceProject }[] {
-    return (this.db.prepare('SELECT id,payload FROM projects').all() as { id: number; payload: string }[]).map(row => {
+  projects(notifiableOnly = false, origin?: 'extension'): { id: number; project: SourceProject }[] {
+    return (this.db.prepare('SELECT id,payload FROM projects WHERE (?=0 OR notify=1) AND (? IS NULL OR origin=?)').all(Number(notifiableOnly), origin ?? null, origin ?? null) as { id: number; payload: string }[]).map(row => {
       const data = JSON.parse(row.payload) as SourceProject;
       return { id: row.id, project: { ...data, detectedAt: new Date(data.detectedAt) } };
     });
+  }
+  ingest(platform: Platform, projects: SourceProject[]): { baseline: boolean; received: number; inserted: number } {
+    if (!projects.length || projects.some(p => p.platform !== platform)) throw new Error('Invalid ingestion batch.');
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const baseline = !this.db.prepare('SELECT 1 FROM ingestion_baselines WHERE platform=?').get(platform);
+      let inserted = 0;
+      for (const project of projects) {
+        const exists = this.db.prepare('SELECT 1 FROM projects WHERE platform=? AND source_id=?').get(platform, project.sourceId);
+        this.saveProject(project, { notify: !baseline, origin: 'extension' });
+        if (!exists) inserted++;
+      }
+      this.db.prepare('INSERT OR IGNORE INTO ingestion_baselines(platform) VALUES(?)').run(platform);
+      this.db.exec('COMMIT');
+      return { baseline, received: projects.length, inserted };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   enqueue(userId: string, projectId: number): void {
     this.db.prepare('INSERT OR IGNORE INTO notifications(user_id,project_id) VALUES(?,?)').run(userId, projectId);

@@ -1,6 +1,7 @@
 import type { Store } from '../persistence/store.js';
 import type { TelegramUpdate } from '../telegram/client.js';
 import { platforms, type Platform } from '../sources/types.js';
+import { monitoringHealth } from '../monitoring/health.js';
 
 export const help = `Mock freelance alerts — no live platform monitoring.
 /start — register your private chat
@@ -19,7 +20,8 @@ Subscribing or resuming delivers matching mock fixtures not previously sent.`;
 
 export interface Messenger { send(text: string, chatId: string): Promise<void> }
 export class CommandHandler {
-  constructor(private readonly store: Store, private readonly messenger: Messenger, private readonly intervalMs: number) {}
+  constructor(private readonly store: Store, private readonly messenger: Messenger, private readonly intervalMs: number,
+    private readonly healthStaleMs = Math.max(60000, intervalMs * 3)) {}
   async handle(update: TelegramUpdate): Promise<void> {
     const message = update.message;
     if (!message?.text || message.chat.type !== 'private' || !message.from || message.from.is_bot) return;
@@ -31,10 +33,12 @@ export class CommandHandler {
     this.store.ensureUser(id, String(message.chat.id));
     const command = match[1]!.toLowerCase();
     const argument = match[2]?.trim() ?? '';
+    const extensionMode = this.store.getState('source_mode') === 'extension';
+    const activeHelp = extensionMode ? help.replace('Mock freelance alerts — no live platform monitoring.', 'Manual browser scans — no automated website polling.').replaceAll('mock fixtures', 'scanned projects') : help;
     let reply: string;
     switch (command) {
-      case 'start': reply = `Welcome! Your private chat is registered. Use /subscribe to enable mock project alerts.\n\n${help}`; break;
-      case 'help': reply = help; break;
+      case 'start': reply = `Welcome! Your private chat is registered. Use /subscribe to enable ${extensionMode ? 'scanned' : 'mock'} project alerts.\n\n${activeHelp}`; break;
+      case 'help': reply = activeHelp; break;
       case 'subscribe': this.store.preferences(id, { subscribed: true, paused: false }); reply = 'Subscribed to mock project alerts. Use /keywords and /platforms to customize them.'; break;
       case 'pause': this.store.preferences(id, { paused: true }); reply = 'Alerts paused. Use /resume to continue.'; break;
       case 'resume':
@@ -62,10 +66,14 @@ export class CommandHandler {
       case 'status': {
         const user = this.store.user(id)!;
         reply = `Mode: MOCK (not live)\nSubscription: ${user.subscribed ? (user.paused ? 'paused' : 'active') : 'not subscribed'}\nPlatforms: ${user.platforms.join(', ')}\nKeywords: ${user.keywords.join(', ') || 'all projects'}\nShared interval: ${this.intervalMs} ms\nDeliveries: ${this.store.history(id).map(x => `${x.state}=${x.count}`).join(', ') || 'none'}`;
+        const health = monitoringHealth(this.store, this.healthStaleMs);
+        reply += `\nMonitoring: ${health.healthy ? 'healthy (mock)' : 'not ready or degraded (mock)'}\n` + health.sources.map(s =>
+          `${s.platform}: ${s.status}${s.stale ? ', stale' : ''}${s.errorCode ? ` (${s.errorCode})` : ''}`).join('\n');
         break;
       }
       default: reply = 'Unknown command. Use /help.';
     }
+    if (extensionMode) reply = reply.replaceAll('mock project alerts', 'manually scanned project alerts').replace('Mock alerts resumed.', 'Manual scan alerts resumed.').replace('Mode: MOCK (not live)', 'Mode: EXTENSION (manual scans)').replaceAll('(mock)', '(manual scans)');
     await this.messenger.send(reply, String(message.chat.id));
   }
 }
