@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Aurox Job Monitor",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "minimum_chrome_version": "120",
   "description": "Projects from your own visible Chrome pages, delivered only to your linked Telegram account.",
   "permissions": [

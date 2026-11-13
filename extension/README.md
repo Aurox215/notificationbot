@@ -47,6 +47,8 @@ No Telegram bot token, browser cookies or platform login credentials are collect
 
 For Scan Now errors, follow the [Chrome scan diagnostic steps](../docs/scan-diagnostics.md). The popup separates a fresh connection check from the last scan result and shows whether the content script responded and ingestion was attempted.
 
+If PeoplePerHour shows recognized links but zero cards, see the [v0.2.2 card extraction fix](../docs/peopleperhour-extraction.md), including the optional sanitized developer layout report.
+
 | Status | What to do |
 | --- | --- |
 | Not connected | Click Connect Telegram and complete code confirmation. |

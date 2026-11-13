@@ -1,5 +1,6 @@
 import { listingPlatform, canonicalProject } from '../../src/ingestion/identity.js';
 import type { ScanPayload, ExtractedProject } from '../../src/ingestion/schema.js';
+import { findProjectCard, isTitleLink } from './project-cards.js';
 
 export interface Extraction {
   status: 'ok' | 'login_required' | 'verification_required' | 'no_projects' | 'unsupported' | 'extraction_failed';
@@ -52,20 +53,20 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
     if (!identity) continue;
     diagnostics.visibleProjectLinks++;
     if (projects.has(identity.sourceId)) continue;
-    const card = anchor.closest('[data-project-id],[data-job-id],.project-card,.job-card,.job-listing,.job-listing-item,.list-group-item,article');
+    const card = findProjectCard(anchor, platform, pageUrl, visible);
     if (!card || !visible(card)) continue;
     diagnostics.matchedCards++;
-    const titleAnchor = Array.from(card.querySelectorAll('h2 a,h3 a,.project-title a,.job-title a,a[data-project-title]')).find(a => {
-      try { return canonicalProject(new URL(a.getAttribute('href')!, pageUrl).href, platform)?.sourceId === identity!.sourceId && visible(a); } catch { return false; }
+    const titleAnchor = Array.from(card.querySelectorAll('a[href]')).find(a => {
+      try { return isTitleLink(a) && canonicalProject(new URL(a.getAttribute('href')!, pageUrl).href, platform)?.sourceId === identity!.sourceId && visible(a); } catch { return false; }
     });
     const title = text(titleAnchor ?? anchor, 500);
     if (!title || /^(?:view|read more|details|apply|send a quote)$/i.test(title)) continue;
     const project: ExtractedProject = { ...identity, title };
-    const budget = field(card, '.budget,.job-budget,.project-budget,[data-field="budget"]', 200);
-    const description = field(card, '.description,.job-description,.project-description,[data-field="description"]', 5000);
+    const budget = field(card, '.budget,.job-budget,.project-budget,.job-list-item__budget,.job-list-item__price,[data-field="budget"]', 200);
+    const description = field(card, '.description,.job-description,.project-description,.job-list-item__description,.job-list-item__excerpt,[itemprop="description"],[data-field="description"]', 5000);
     const category = field(card, '.category,.job-category,[data-field="category"]', 200);
-    const publishedAt = field(card, 'time,.posted,.posted-date,.publication-time,.job-age', 150);
-    const skills = Array.from(card.querySelectorAll('.skill,.skills li,[data-field="skill"]')).map(e => text(e, 60)).filter((s): s is string => Boolean(s)).slice(0,30);
+    const publishedAt = field(card, 'time,.posted,.posted-date,.publication-time,.job-age,.job-list-item__date,.job-list-item__posted', 150);
+    const skills = Array.from(card.querySelectorAll('.skill,.skills li,.job-list-item__skills li,[data-field="skill"]')).map(e => text(e, 60)).filter((s): s is string => Boolean(s)).slice(0,30);
     if (budget) project.budget = budget;
     if (description) project.description = description;
     if (category) project.category = category;

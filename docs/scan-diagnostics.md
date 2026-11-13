@@ -1,5 +1,7 @@
 # Diagnose Scan Now in Chrome
 
+For **visible project links > 0 / matched cards = 0** on PeoplePerHour, use the [v0.2.2 extraction fix and reload instructions](peopleperhour-extraction.md).
+
 The old extension used one generic “Connection unavailable” message for unrelated scan failures. A missing content script could show that message even while the backend session check succeeded. Backend rejections were also incorrectly labeled no_projects. These were diagnostic bugs, not proof that Telegram pairing had failed.
 
 Version **0.2.1** keeps the current connection check separate from the last scan attempt and records its stage. It never displays tokens, request headers, raw exceptions, response bodies or page contents in diagnostics.
@@ -7,7 +9,7 @@ Version **0.2.1** keeps the current connection check separate from the last scan
 ## Install the fix without resetting pairing
 
 1. Build the extension with the same backend origin used by your current installation. The default build is for http://127.0.0.1:4318; hosted builds must preserve their approved AUROX_BACKEND_URL. No .env edit is needed for this fix.
-2. Open chrome://extensions and click **Reload** on Aurox Job Monitor. Check its version is **0.2.1**. Do not remove/reinstall it or clear extension storage.
+2. Open chrome://extensions and click **Reload** on Aurox Job Monitor. Use **0.2.2 or later** for the PeoplePerHour card fix. Do not remove/reinstall it or clear extension storage.
 3. **Manually refresh the PeoplePerHour listing tab after the extension reload.** Reloading an extension does not guarantee its content script is attached to a tab that was already open. Check the extension has site access to PeoplePerHour.
 4. Wait for normal website loading. If login, CAPTCHA or verification is shown, complete ordinary access yourself; the extension does not interact with those controls.
 5. Open the popup and click **Check connection**. Read its timestamped result. Reconnect Telegram only if authentication is expired/revoked or the extension is no longer paired.

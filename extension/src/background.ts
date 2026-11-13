@@ -2,6 +2,7 @@ import type { Extraction } from './extractor.js';
 import { listingPlatform } from '../../src/ingestion/identity.js';
 import { DiagnosticError, diagnostic, httpFailure } from './diagnostics.js';
 declare const __AUROX_BACKEND_URL__: string;
+declare const __AUROX_DEV_DIAGNOSTICS__: boolean;
 const backend = __AUROX_BACKEND_URL__;
 interface Session { token: string; expiresAt: number; localId: string }
 interface Pending { pairingId: string; pollSecret: string; confirmationCode: string; expiresAt: number }
@@ -88,6 +89,13 @@ async function submit(extraction: Extraction, tabId: number) {
 }
 async function handle(message: { type?: string; extraction?: Extraction }, sender: chrome.runtime.MessageSender) {
   await ready;
+  if (message.type === 'DEV_STRUCTURE') {
+    if (!__AUROX_DEV_DIAGNOSTICS__) throw new DiagnosticError('developer_diagnostics_disabled', 'extension', 'Developer structure diagnostics are disabled in this build.');
+    const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+    if (tab?.id === undefined || !tab.url || listingPlatform(tab.url) !== 'PeoplePerHour') throw new DiagnosticError('unsupported_page', 'content_script', 'Open the PeoplePerHour listing page.');
+    try { return { structure: await chrome.tabs.sendMessage(tab.id, { type: 'STRUCTURE_PAGE' }) }; }
+    catch { throw new DiagnosticError('content_script_unavailable', 'content_script', 'Refresh the listing tab after loading the developer build.'); }
+  }
   if (message.type === 'AUTO_SCAN') {
     if (sender.frameId !== 0 || sender.tab?.id === undefined || !sender.url || !supportedHost(sender.url) ||
       message.extraction?.payload && listingPlatform(message.extraction.payload.pageUrl) !== listingPlatform(sender.url)) throw new Error('Invalid page sender.');
@@ -162,7 +170,7 @@ async function handle(message: { type?: string; extraction?: Extraction }, sende
       count: 0, lastSuccess: null, lastAttempt: null, status: 'not_scanned', stage: 'idle', detail: 'Scan Now or watch for visible card changes.',
       ...data[key] as object,
       ...(connectionFailure?.code === 'authentication_expired' ? { status: connectionFailure.code, stage: connectionFailure.stage, detail: connectionFailure.message } : {}),
-      connected: Boolean(current), connection, connectionStatus: connectionFailure?.code ?? (current ? 'connected' : 'not_connected'),
+      connected: Boolean(current), developerDiagnostics: __AUROX_DEV_DIAGNOSTICS__, connection, connectionStatus: connectionFailure?.code ?? (current ? 'connected' : 'not_connected'),
       connectionCheckedAt: new Date().toISOString() };
   }
   throw new Error('Unknown action.');

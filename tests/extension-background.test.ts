@@ -123,3 +123,12 @@ test('content-script extraction exceptions have their own status and no backend 
   assert.equal(result.contentScriptReached, true);
   assert.equal(w.requests.length, 0);
 });
+
+test('structure diagnostics are disabled in the normal release build and make no page or backend request', async () => {
+  const w = worker();
+  const result = await w.send('DEV_STRUCTURE');
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'developer_diagnostics_disabled');
+  assert.equal(w.pageMessages.length, 0);
+  assert.equal(w.requests.length, 0);
+});

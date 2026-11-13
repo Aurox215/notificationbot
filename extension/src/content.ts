@@ -1,5 +1,7 @@
 import { extractProjects } from './extractor.js';
 import type { Extraction } from './extractor.js';
+import { structureReport } from './structure-report.js';
+declare const __AUROX_DEV_DIAGNOSTICS__: boolean;
 function extractSafely(): Extraction {
   try { return extractProjects(document, location.href); }
   catch { return { status: 'extraction_failed', detail: 'Content script received the scan, but reading the page failed. No project data was submitted. Reload the listing page and try again.' }; }
@@ -30,6 +32,10 @@ document.addEventListener('visibilitychange', schedule);
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
   if (message?.type === 'SCAN_PAGE') reply(extractSafely());
+  if (message?.type === 'STRUCTURE_PAGE') {
+    if (!__AUROX_DEV_DIAGNOSTICS__) { reply({ status: 'developer_diagnostics_disabled' }); return; }
+    try { reply(structureReport(document, location.href)); } catch { reply({ status: 'structure_unavailable', samples: [] }); }
+  }
   if (message?.type === 'RESCAN') { lastSubmitted = ''; schedule(); }
 });
 schedule();

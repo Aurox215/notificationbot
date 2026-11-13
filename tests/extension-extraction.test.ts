@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { parseHTML } from 'linkedom';
 import { extractProjects } from '../extension/src/extractor.js';
 import { validateScan } from '../src/ingestion/schema.js';
+import { structureReport } from '../extension/src/structure-report.js';
 const fixture = (name: string) => parseHTML(readFileSync(join(process.cwd(), 'tests/fixtures/extension', name), 'utf8')).document as unknown as Document;
 
 test('PeoplePerHour fixture extracts visible cards, canonical identities, optional fields and no hidden text', () => {
@@ -30,6 +31,48 @@ test('Guru fixture extracts canonical URLs and leaves missing information absent
   assert.equal(scan.payload!.projects[0]!.url, 'https://www.guru.com/jobs/shopify-react-integration/201');
   assert.equal(scan.payload!.projects[1]!.description, undefined);
   assert.equal(validateScan(scan.payload).projects.length, 2);
+});
+
+test('PeoplePerHour BEM cards, h6 titles and repeated unknown wrappers extract without navigation or metadata bleed', () => {
+  const result = extractProjects(fixture('peopleperhour-layouts.html'), 'https://www.peopleperhour.com/freelance-jobs');
+  assert.equal(result.status, 'ok');
+  const projects = result.payload!.projects;
+  assert.deepEqual(projects.map(p => p.sourceId), ['401', '402', '403', '404']);
+  assert.equal(projects[0]!.title, 'Python API integration');
+  assert.equal(projects[0]!.budget, '£750 fixed');
+  assert.equal(projects[0]!.description, 'Connect an existing Python service.');
+  assert.equal(projects[0]!.publishedAt, 'Posted 10 minutes ago');
+  assert.deepEqual(projects[0]!.skills, ['Python', 'API']);
+  assert.ok(!projects[0]!.url.includes('?'));
+  assert.equal(projects[1]!.budget, undefined);
+  assert.equal(projects[1]!.description, undefined);
+  assert.equal(projects[1]!.publishedAt, undefined);
+  assert.equal(projects[2]!.budget, '$200');
+  assert.equal(projects[3]!.budget, '$400');
+  assert.equal(projects[3]!.title, 'PHP project');
+  assert.equal(validateScan(result.payload).projects.length, 4);
+});
+
+test('semantic fallback recognizes repeated cards directly under main but never merges different project IDs', () => {
+  const document = parseHTML('<html><body><main><div><h6><a href="/freelance-jobs/first-501">First</a></h6><span class="budget">£100</span></div><div><h6><a href="/freelance-jobs/second-502">Second</a></h6></div></main></body></html>').document as unknown as Document;
+  const result = extractProjects(document, 'https://www.peopleperhour.com/freelance-jobs');
+  assert.equal(result.payload!.projects.length, 2);
+  assert.equal(result.payload!.projects[0]!.budget, '£100');
+  assert.equal(result.payload!.projects[1]!.budget, undefined);
+  const mixed = parseHTML('<html><body><article><h6><a href="/freelance-jobs/first-501">First</a></h6><h6><a href="/freelance-jobs/second-502">Second</a></h6><span class="budget">£999</span></article></body></html>').document as unknown as Document;
+  assert.equal(extractProjects(mixed, 'https://www.peopleperhour.com/freelance-jobs').payload, undefined);
+});
+
+test('developer structure report contains layout only and redacts account, URL, text and attribute sentinels', () => {
+  const document = parseHTML('<html><body><main class="job-list account-AlicePrivate secret-token-XY123" id="private-account-id"><div class="job-list-item account-AlicePrivate"><h6><a href="/freelance-jobs/private-title-731234?token=private-cookie-value" data-token="secret-credential">PRIVATE PROJECT TITLE</a></h6></div><div class="job-list-item"><h6><a href="/freelance-jobs/other-private-731235">OTHER PRIVATE TITLE</a></h6></div></main></body></html>').document as unknown as Document;
+  const report = structureReport(document, 'https://www.peopleperhour.com/freelance-jobs');
+  const serialized = JSON.stringify(report);
+  assert.ok(serialized.includes('job-list-item'));
+  assert.ok(serialized.includes('h6'));
+  for (const secret of ['AlicePrivate', 'secret-token', 'XY123', 'private-account-id', '731234', '731235', 'private-cookie-value', 'secret-credential', 'PRIVATE', 'href', 'https://']) assert.ok(!serialized.includes(secret), secret);
+  const blocked = structureReport(fixture('verification.html'), 'https://www.peopleperhour.com/freelance-jobs');
+  assert.equal(blocked.status, 'verification_required');
+  assert.deepEqual(blocked.samples, []);
 });
 test('extraction distinguishes visible links with unsupported card layout from an empty page', () => {
   const document = parseHTML('<html><body><div class="unknown-layout"><h2><a href="/freelance-jobs/python-api-999">Python API</a></h2></div></body></html>').document as unknown as Document;

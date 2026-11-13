@@ -1,5 +1,6 @@
 const get = (id: string) => document.getElementById(id)!;
 interface PopupState {
+  developerDiagnostics?: boolean;
   connected: boolean; supported: boolean; website: string; count: number; lastSuccess: string | null;
   lastAttempt: string | null; connection: string; connectionCheckedAt: string; confirmationCode?: string | null;
   detail: string; status: string; stage: string; contentScriptReached?: boolean; ingestionAttempted?: boolean;
@@ -27,6 +28,7 @@ function render(value: PopupState) {
   get('diagnostics').textContent = `Stage: ${value.stage}; status: ${value.status}. Content script: ${value.contentScriptReached ? 'responded' : 'not confirmed'}. Ingestion: ${value.ingestionAttempted ? 'attempted' : 'not attempted'}.` +
     (counts ? ` Visible project links: ${counts.visibleProjectLinks}; matched cards: ${counts.matchedCards}; extracted: ${counts.extractedProjects}.` : '');
   get('confirmation').textContent = value.confirmationCode ? `Compare code: ${value.confirmationCode}. Open the new Telegram tab and confirm only if the code matches.` : '';
+  get('developer').hidden = !value.developerDiagnostics;
   buttons();
 }
 async function refresh() {
@@ -44,6 +46,12 @@ async function refresh() {
   }
 }
 get('check').addEventListener('click', () => { void refresh(); });
+get('structure').addEventListener('click', () => {
+  get('structureReport').textContent = 'Reading layout only...';
+  void chrome.runtime.sendMessage({ type: 'DEV_STRUCTURE' }).then(result => {
+    get('structureReport').textContent = result?.ok ? JSON.stringify(result.structure, null, 2) : 'Structure report unavailable. Refresh the listing page with the developer build loaded.';
+  }).catch(() => { get('structureReport').textContent = 'Structure report unavailable.'; });
+});
 for (const [id, type] of [['connect', 'CONNECT'], ['disconnect', 'DISCONNECT'], ['scan', 'SCAN']] as const) {
   get(id).addEventListener('click', () => {
     if (refreshTimer) clearTimeout(refreshTimer);
