@@ -6,6 +6,18 @@ import type { AuthenticationObservation } from './authentication.js';
 declare const __AUROX_BACKEND_URL__: string;
 declare const __AUROX_DEV_DIAGNOSTICS__: boolean;
 const backend = __AUROX_BACKEND_URL__;
+function monitoringDetail(value: unknown): string {
+  if (!value || typeof value !== 'object') return '';
+  const summary = value as Record<string, unknown>;
+  if (!['afterBaseline', 'matching', 'keywordExcluded', 'platformExcluded', 'missingSearchMetadata'].every(key =>
+    typeof summary[key] === 'number' && Number.isSafeInteger(summary[key]) && Number(summary[key]) >= 0) || typeof summary.alertsEnabled !== 'boolean') return '';
+  const deliveries = Array.isArray(summary.deliveries) ? summary.deliveries.filter(row => row && ['sent', 'pending', 'sending', 'failed', 'unknown'].includes(row.state) && Number.isSafeInteger(row.count) && row.count >= 0)
+    .map(row => `${row.state}=${row.count}`).join(', ') : '';
+  return `Stored after baseline: ${summary.afterBaseline}. Matching current filters: ${summary.matching}; keyword excluded: ${summary.keywordExcluded}; platform excluded: ${summary.platformExcluded}. ` +
+    `Telegram alerts: ${summary.alertsEnabled ? 'enabled' : 'paused or not subscribed'}. Deliveries: ${deliveries || 'none'}. ` +
+    (summary.afterBaseline && !summary.matching ? 'No later projects match. Check /keywords in Telegram; /keywords all enables all projects on selected platforms. ' : '') +
+    (summary.missingSearchMetadata ? `${summary.missingSearchMetadata} later project(s) lack descriptions and skills; keyword matching has limited source data.` : '');
+}
 interface Session { token: string; expiresAt: number; localId: string }
 interface Pending { pairingId: string; pollSecret: string; confirmationCode: string; expiresAt: number }
 interface ScanState {
@@ -111,7 +123,10 @@ async function submit(extraction: Extraction, tabId: number, platform?: 'PeopleP
         throw new DiagnosticError('backend_response_invalid', 'ingestion', 'Backend did not return a valid ingestion acknowledgement. No successful scan was recorded.');
       }
       state.lastSuccess = String(result.acceptedAt);
-      state.detail = result.baseline ? 'Your initial baseline was saved silently.' : `Accepted ${result.inserted} new project(s) for your Telegram account.`;
+      state.detail = result.baseline ? 'Your initial baseline was saved silently; existing projects do not send alerts.' :
+        result.inserted === 0 ? 'No unseen project IDs in this scan. Existing projects were checked for updated metadata.' :
+          `Saved ${result.inserted} unseen project(s). Telegram delivery depends on your subscription and filters.`;
+      state.detail += ' ' + monitoringDetail(result.monitoring);
       state.status = 'accepted';
       if (platform) await chrome.storage.local.remove(`blocked:${current.localId}:${platform}`);
       await chrome.storage.local.set({ [key]: state });
@@ -258,11 +273,13 @@ async function handle(message: { type?: string; extraction?: Extraction }, sende
     try { current = await session(); } catch (error) { connectionFailure = diagnostic(error); }
     const scope = current;
     let connection = 'Not connected';
+    let currentMonitoring = '';
     if (current) {
       try {
         const result = await api('/v1/session', 'GET', undefined, current.token);
         if (!result || result.connected !== true) throw new DiagnosticError('backend_response_invalid', 'authentication', 'Backend did not confirm the session. Check the server address and routing.');
         connection = 'Connected to your Telegram account';
+        currentMonitoring = monitoringDetail(result.monitoring);
       }
       catch (error) { connectionFailure = diagnostic(error); if (connectionFailure.code === 'authentication_expired') current = undefined; }
     }
@@ -280,6 +297,7 @@ async function handle(message: { type?: string; extraction?: Extraction }, sende
       platformAuthentication[platform] = (await chrome.storage.local.get(authKey))[authKey] ?? authenticationFromResult('unknown');
     }
     return { website, supported: Boolean(tab?.url && supportedHost(tab.url)),
+      monitoringDetail: currentMonitoring,
       platformAuthentication,
       confirmationCode: pending && pending.expiresAt > Date.now() ? pending.confirmationCode : null,
       count: 0, lastSuccess: null, lastAttempt: null, status: 'not_scanned', stage: 'idle', detail: 'Scan Now or watch for visible card changes.',

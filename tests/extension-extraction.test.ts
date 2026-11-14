@@ -17,12 +17,13 @@ test('card metadata survives extraction and validation into Telegram without inv
     const document = parseHTML(`<html><body><article class="project-card"><h2><a href="${href}">Python API</a></h2>
       <span class="budget">$500</span><span class="category">Development</span><span class="skill">Python</span>
       <span class="client-rating-score">4.9 / 5</span><span class="client-review-count">0</span>
+      <span class="client-join-date">January 2024</span>
       </article></body></html>`).document as unknown as Document;
     const result = extractProjects(document, pageUrl);
     const project = validateScan(result.payload).projects[0]!;
     assert.equal(project.platform, platform);
     const alert = formatAlert(project);
-    for (const value of ['Python API', 'Budget: $500', 'Category: Development', 'Skills: Python', 'Client rating: 4.9 / 5', 'Client reviews: 0']) assert.ok(alert.includes(value), value);
+    for (const value of ['Python API', 'Budget: $500', 'Category: Development', 'Skills: Python', 'Client rating: 4.9 / 5', 'Client reviews: 0', 'Client joined: January 2024', new URL(href, pageUrl).href]) assert.ok(alert.includes(value), value);
     const payload = structuredClone(result.payload!);
     payload.projects[0]!.client = { reviewCount: -1 };
     assert.throws(() => validateScan(payload), /invalid_project/);
@@ -30,6 +31,10 @@ test('card metadata survives extraction and validation into Telegram without inv
     assert.throws(() => validateScan(payload), /invalid_project/);
     payload.projects[0]!.client = { ratingScore: '\u0000secret' };
     assert.throws(() => validateScan(payload), /invalid_project/);
+    for (const joinedAt of ['', 'x'.repeat(151), '\u0000invalid']) {
+      payload.projects[0]!.client = { joinedAt };
+      assert.throws(() => validateScan(payload), /invalid_project/);
+    }
     delete payload.projects[0]!.client;
     assert.equal(validateScan(payload).projects[0]!.client, undefined);
   }

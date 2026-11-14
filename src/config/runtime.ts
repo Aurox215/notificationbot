@@ -1,7 +1,8 @@
 import { readTelegramConfig } from './index.js';
 import { readIngestionConfig } from '../ingestion/config.js';
 
-export const defaultKeywords = ['AI', 'automation', 'Python', 'PHP', 'Laravel', 'React', 'Next.js', 'Node.js', 'TypeScript', 'WordPress', 'WooCommerce', 'Shopify', 'API', 'full-stack'];
+// Empty keywords means all projects. Users can opt into filtering in Telegram.
+export const defaultKeywords: string[] = [];
 
 export function readRuntimeConfig(env: NodeJS.ProcessEnv = process.env) {
   const intervalMs = Number(env.MONITOR_INTERVAL_MS ?? '5000');

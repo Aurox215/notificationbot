@@ -71,6 +71,7 @@ export class Monitor {
           try {
             await this.messenger.send(formatAlert(project), user.chatId);
             finish(user.id, projectId, 'sent');
+            log('info', 'Project notification sent.', { event: 'notification.sent', platform: project.platform });
           } catch (error) {
             if (error instanceof TelegramError && error.code === 429) {
               const retryAt = Date.now() + error.retryAfter * 1000;

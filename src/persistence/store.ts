@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Platform, SourceProject } from '../sources/types.js';
+import { matchesKeywords } from '../filtering/keywords.js';
 
 export interface User {
   id: string; chatId: string; subscribed: boolean; paused: boolean; keywords: string[]; platforms: Platform[];
@@ -113,6 +114,18 @@ export class Store {
       const baseline = !this.db.prepare('SELECT 1 FROM browser_baselines WHERE user_id=? AND platform=?').get(userId, platform);
       let inserted = 0;
       for (const project of projects) {
+        const existing = this.db.prepare('SELECT payload FROM browser_projects WHERE user_id=? AND platform=? AND source_id=?')
+          .get(userId, platform, project.sourceId) as { payload: string } | undefined;
+        if (existing) {
+          // A later DOM scan may expose metadata absent from an earlier HTML scan.
+          // Keep original discovery time and baseline eligibility; never notify a baseline retroactively.
+          const previous = JSON.parse(existing.payload) as SourceProject;
+          const merged = { ...previous, ...project, detectedAt: previous.detectedAt,
+            ...(previous.client || project.client ? { client: { ...previous.client, ...project.client } } : {}) };
+          this.db.prepare('UPDATE browser_projects SET payload=? WHERE user_id=? AND platform=? AND source_id=?')
+            .run(JSON.stringify(merged), userId, platform, project.sourceId);
+          continue;
+        }
         inserted += Number(this.db.prepare(`INSERT OR IGNORE INTO browser_projects(user_id,platform,source_id,payload,notify) VALUES(?,?,?,?,?)`)
           .run(userId, platform, project.sourceId, JSON.stringify(project), Number(!baseline)).changes);
       }
@@ -127,6 +140,20 @@ export class Store {
         const project = JSON.parse(row.payload) as SourceProject;
         return { id: row.id, project: { ...project, detectedAt: new Date(project.detectedAt) } };
       });
+  }
+  browserSummary(userId: string) {
+    const user = this.user(userId);
+    if (!user) throw new Error('Unknown user.');
+    const all = this.browserProjects(userId, true);
+    const candidates = this.browserProjects(userId);
+    const platforms = candidates.filter(p => user.platforms.includes(p.project.platform));
+    const matching = platforms.filter(p => matchesKeywords(p.project, user.keywords));
+    const deliveries = this.db.prepare('SELECT state,COUNT(*) AS count FROM browser_notifications WHERE user_id=? GROUP BY state').all(userId);
+    return { stored: all.length, baseline: all.length - candidates.length, afterBaseline: candidates.length,
+      platformExcluded: candidates.length - platforms.length, keywordExcluded: platforms.length - matching.length,
+      matching: matching.length, alertsEnabled: user.subscribed && !user.paused,
+      missingSearchMetadata: candidates.filter(p => !p.project.description && !p.project.skills?.length).length,
+      deliveries: deliveries.map(row => ({ state: String(row.state), count: Number(row.count) })) };
   }
   enqueueOwned(userId: string, projectId: number): void {
     this.db.prepare('INSERT OR IGNORE INTO browser_notifications(user_id,project_id) VALUES(?,?)').run(userId, projectId);

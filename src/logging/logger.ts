@@ -6,6 +6,11 @@ export interface LogFields {
   retryAt?: number | null;
   durationMs?: number;
   projectCount?: number;
+  inserted?: number;
+  baseline?: boolean;
+  matching?: number;
+  keywordExcluded?: number;
+  alertsEnabled?: boolean;
 }
 export function log(level: 'info' | 'error', message: string, fields: LogFields = {}): void {
   // Fields are operational metadata only. Never pass upstream messages, URLs or credentials.

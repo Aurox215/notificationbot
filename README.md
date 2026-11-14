@@ -24,6 +24,11 @@ Users do not run Node.js, edit .env files, enter extension IDs or ingestion toke
 
 The extension observes loaded project cards and polls listing HTML in the background. Use **Stop scan / Continue scan**; there is no Scan Now button. The first accepted batch for each user and platform is saved silently. Later unseen projects can produce matching alerts only for that user.
 
+New users receive all projects by default unless the operator configures
+`DEFAULT_KEYWORDS`. Existing users can send `/keywords all` and `/platforms all`
+to receive all later detected projects from both platforms. Project alerts include
+the direct project URL. Already delivered projects are not sent again.
+
 ## What observation does
 
 - Reads supported visible cards already loaded by the website.

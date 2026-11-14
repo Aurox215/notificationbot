@@ -88,6 +88,13 @@ export class CommandHandler {
         const user = this.store.user(id)!;
         reply = `Mode: MOCK (not live)\nSubscription: ${user.subscribed ? (user.paused ? 'paused' : 'active') : 'not subscribed'}\nPlatforms: ${user.platforms.join(', ')}\nKeywords: ${user.keywords.join(', ') || 'all projects'}\nShared interval: ${this.intervalMs} ms\nDeliveries: ${this.store.history(id).map(x => `${x.state}=${x.count}`).join(', ') || 'none'}`;
         const health = monitoringHealth(this.store, this.healthStaleMs);
+        if (extensionMode) {
+          const summary = this.store.browserSummary(id);
+          reply += `\nBrowser projects: ${summary.stored}; silent baseline: ${summary.baseline}; later projects: ${summary.afterBaseline}` +
+            `\nMatching current filters: ${summary.matching}; keyword excluded: ${summary.keywordExcluded}; platform excluded: ${summary.platformExcluded}` +
+            `\nLater projects missing description and skills: ${summary.missingSearchMetadata}`;
+          if (summary.afterBaseline > 0 && summary.matching === 0) reply += '\nNo later projects match your filters. Use /keywords to check them, or /keywords all to receive all projects on your selected platforms.';
+        }
         reply += extensionMode ? `\nBackend dispatch: ${health.healthy ? 'healthy' : 'not ready or degraded'}\nBrowser scans come only from your connected extension.` :
           `\nMonitoring: ${health.healthy ? 'healthy (mock)' : 'not ready or degraded (mock)'}\n` + health.sources.map(s =>
             `${s.platform}: ${s.status}${s.stale ? ', stale' : ''}${s.errorCode ? ` (${s.errorCode})` : ''}`).join('\n');

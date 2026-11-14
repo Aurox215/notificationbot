@@ -3,8 +3,17 @@ import assert from 'node:assert/strict';
 import { readTelegramConfig } from '../src/config/index.js';
 import { formatAlert } from '../src/domain/project.js';
 import { TelegramClient } from '../src/telegram/client.js';
+import { defaultKeywords } from '../src/config/runtime.js';
 
 const config = { token: '123:test_secret', chatId: '456', timeoutMs: 1000 };
+
+test('default preferences match all projects and long accepted project URLs remain intact', () => {
+  assert.deepEqual(defaultKeywords, []);
+  const url = 'https://www.peopleperhour.com/freelance-jobs/' + 'a'.repeat(900) + '-123';
+  const alert = formatAlert({ platform: 'PeoplePerHour', title: 'Project', description: 'x'.repeat(5000), url, detectedAt: new Date() });
+  assert.ok(alert.includes(url));
+  assert.ok(alert.length <= 4096);
+});
 
 test('configuration rejects missing credentials and invalid timeout without revealing values', () => {
   assert.throws(() => readTelegramConfig({}), /TELEGRAM_BOT_TOKEN/);

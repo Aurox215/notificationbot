@@ -44,7 +44,7 @@ export function createIngestionServer(store: Store, settings: IngestionConfig, a
       res.setHeader('Retry-After', '60'); reply(429, { error: 'rate_limited' }); return;
     }
     if (req.method === 'GET' && ['/health', '/v1/session'].includes(req.url ?? '')) {
-      reply(200, { ok: true, connected: true, mode: 'personal-browser' }); return;
+      reply(200, { ok: true, connected: true, mode: 'personal-browser', monitoring: store.browserSummary(userId!) }); return;
     }
     if (req.method === 'DELETE' && req.url === '/v1/session') {
       accounts.revoke(req.headers.authorization!); reply(200, { ok: true }); return;
@@ -92,8 +92,11 @@ export function createIngestionServer(store: Store, settings: IngestionConfig, a
       // Ownership is derived solely from the authenticated session, never request fields.
       const result = store.ingestOwned(userId!, scan.platform, scan.projects);
       store.recordAccess(userId!, scan.platform, 'ok');
-      log('info', 'Owner-scoped browser batch accepted.', { event: 'ingestion.accepted', platform: scan.platform, projectCount: scan.projects.length });
-      reply(200, { ...result, acceptedAt: new Date().toISOString() });
+      const monitoring = store.browserSummary(userId!);
+      log('info', 'Owner-scoped browser batch accepted.', { event: 'ingestion.accepted', platform: scan.platform,
+        projectCount: scan.projects.length, inserted: result.inserted, baseline: result.baseline,
+        matching: monitoring.matching, keywordExcluded: monitoring.keywordExcluded, alertsEnabled: monitoring.alertsEnabled });
+      reply(200, { ...result, monitoring, acceptedAt: new Date().toISOString() });
     } catch {
       log('error', 'Browser request failed.', { event: 'ingestion.failed', errorCode: 'request_failed' });
       reply(500, { error: 'request_failed' });

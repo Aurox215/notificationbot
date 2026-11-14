@@ -1,5 +1,6 @@
 const get = (id: string) => document.getElementById(id)!;
 interface PopupState {
+  monitoringDetail?: string;
   platformAuthentication?: Record<string, { state: string }>;
   developerDiagnostics?: boolean;
   scanningEnabled?: boolean;
@@ -27,7 +28,7 @@ function render(value: PopupState) {
   get('platformAuthentication').textContent = ['PeoplePerHour', 'Guru'].map(platform =>
     `${platform} account: ${value.platformAuthentication?.[platform]?.state ?? 'unknown'}`).join(' | ') + '. Listing access does not prove login.';
   get('connectionChecked').textContent = 'Connection checked: ' + new Date(value.connectionCheckedAt).toLocaleTimeString();
-  get('status').textContent = value.detail;
+  get('status').textContent = value.detail + (value.monitoringDetail ? '\n\nCurrent notification status: ' + value.monitoringDetail : '');
   get('attempt').textContent = value.lastAttempt ? 'Last scan attempt: ' + new Date(value.lastAttempt).toLocaleString() : 'No scan attempted in this tab.';
   const counts = value.diagnostics;
   get('diagnostics').textContent = `Stage: ${value.stage}; status: ${value.status}. Content script: ${value.contentScriptReached ? 'responded' : 'not confirmed'}. Ingestion: ${value.ingestionAttempted ? 'attempted' : 'not attempted'}.` +

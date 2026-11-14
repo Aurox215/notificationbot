@@ -83,10 +83,11 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
     // Never confuse project budgets, proposal counts or freelancer ratings with client metadata.
     const ratingScore = field(card, '.client-rating-score,[data-field="client-rating-score"]', 60);
     const reviews = field(card, '.client-review-count,[data-field="client-review-count"]', 60);
+    const joinedAt = field(card, '.client-joined-at,.client-join-date,[data-field="client-joined-at"],[data-field="client-join-date"]', 150);
     const reviewCount = reviews && /^(?:\d+|\d{1,3}(?:,\d{3})+)$/.test(reviews) ? Number(reviews.replace(/,/g, '')) : undefined;
-    if (ratingScore || (reviewCount !== undefined && Number.isSafeInteger(reviewCount))) {
+    if (ratingScore || joinedAt || (reviewCount !== undefined && Number.isSafeInteger(reviewCount))) {
       project.client = { ...(ratingScore ? { ratingScore } : {}),
-        ...(reviewCount !== undefined && Number.isSafeInteger(reviewCount) ? { reviewCount } : {}) };
+        ...(reviewCount !== undefined && Number.isSafeInteger(reviewCount) ? { reviewCount } : {}), ...(joinedAt ? { joinedAt } : {}) };
     }
     projects.set(project.sourceId, project);
     if (projects.size >= 100) break;

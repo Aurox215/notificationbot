@@ -18,6 +18,56 @@ import { createSources } from '../src/sources/registry.js';
 const extensionId = 'a'.repeat(32);
 const batch = (ids: number[] = [101], title = 'Python API'): ScanPayload => ({ platform: 'PeoplePerHour', pageUrl: 'https://www.peopleperhour.com/freelance-jobs',
   projects: ids.map(id => ({ sourceId: String(id), url: `https://www.peopleperhour.com/freelance-jobs/python-api-${id}`, title, skills: ['Python'] })) });
+
+test('filtered projects explain silence, metadata enrichment enables one owner-only notification without promoting baseline', async () => {
+  const store = new Store(':memory:', ['python']);
+  const sent: { text: string; chatId: string }[] = [];
+  try {
+    for (const id of ['1', '2']) { store.ensureUser(id, id); store.preferences(id, { subscribed: true }); }
+    const plain = (ids: number[]) => validateScan({ ...batch(ids, 'Build a service'), projects: batch(ids, 'Build a service').projects.map(({ skills, ...project }) => project) }).projects;
+    store.ingestOwned('1', 'PeoplePerHour', plain([101]));
+    store.ingestOwned('1', 'PeoplePerHour', plain([101, 102]));
+    const monitor = new Monitor(store, [], { send: async (text, chatId) => { sent.push({ text, chatId }); } }, 0);
+    await monitor.tick(new AbortController().signal);
+    assert.equal(sent.length, 0);
+    assert.equal(store.browserSummary('1').keywordExcluded, 1);
+    assert.equal(store.browserSummary('1').missingSearchMetadata, 1);
+    assert.equal(store.browserSummary('2').stored, 0);
+    const originalTime = store.browserProjects('1')[0]!.project.detectedAt.toISOString();
+    const enriched = plain([101, 102]).map(project => ({ ...project, description: 'Implement a Python service', skills: ['Python'] }));
+    assert.equal(store.ingestOwned('1', 'PeoplePerHour', enriched).inserted, 0);
+    assert.equal(store.browserSummary('1').matching, 1);
+    assert.equal(store.browserSummary('1').baseline, 1);
+    assert.equal(store.browserProjects('1')[0]!.project.detectedAt.toISOString(), originalTime);
+    // Sparse later HTTP responses must not erase metadata found in the loaded DOM.
+    store.ingestOwned('1', 'PeoplePerHour', plain([101, 102]));
+    await monitor.tick(new AbortController().signal);
+    await monitor.tick(new AbortController().signal);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]!.chatId, '1');
+    assert.match(sent[0]!.text, /Python service/);
+    assert.deepEqual(store.browserSummary('1').deliveries, [{ state: 'sent', count: 1 }]);
+  } finally { store.close(); }
+});
+
+test('changing keywords delivers previously filtered later projects once and keeps the first batch silent', async () => {
+  const store = new Store(':memory:', ['python']);
+  const sent: string[] = [];
+  try {
+    store.ensureUser('1', '1'); store.preferences('1', { subscribed: true });
+    const projects = validateScan({ ...batch([101, 102], 'Logo design'), projects: batch([101, 102], 'Logo design').projects.map(p => ({ ...p, skills: ['Design'] })) }).projects;
+    store.ingestOwned('1', 'PeoplePerHour', projects.slice(0, 1));
+    store.ingestOwned('1', 'PeoplePerHour', projects);
+    const monitor = new Monitor(store, [], { send: async text => { sent.push(text); } }, 0);
+    await monitor.tick(new AbortController().signal);
+    assert.equal(sent.length, 0);
+    store.preferences('1', { keywords: [] });
+    await monitor.tick(new AbortController().signal);
+    await monitor.tick(new AbortController().signal);
+    assert.equal(sent.length, 1);
+    assert.ok(sent[0]!.includes(projects[1]!.url!));
+  } finally { store.close(); }
+});
 function authorize(accounts: AccountLinks, store: Store, id: string) {
   store.ensureUser(id, id);
   const proof = ('proof' + id).repeat(15);

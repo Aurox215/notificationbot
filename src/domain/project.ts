@@ -29,6 +29,7 @@ export function formatAlert(alert: ProjectAlert): string {
   if (alert.description) lines.push('', alert.description);
   // Reserve space for the source link and timestamp even for long descriptions.
   const body = lines.join('\n').slice(0, 3000);
-  const url = alert.url && /^https?:\/\//i.test(alert.url) ? alert.url.slice(0, 800) : undefined;
+  // Ingestion accepts URLs up to 1000 characters. Preserve them intact so links work.
+  const url = alert.url && alert.url.length <= 1000 && /^https?:\/\//i.test(alert.url) ? alert.url : undefined;
   return [body, url, `Detected: ${alert.detectedAt.toISOString()}`].filter(Boolean).join('\n\n');
 }

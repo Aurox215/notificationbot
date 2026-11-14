@@ -22,9 +22,10 @@ and permitted status-check method using platform documentation or local inspecti
 Only share non-secret field names and behavior, never token/cookie values.
 
 Notifications support title, budget, skills, category, client rating score and client
-review count when available. Client metadata now survives extension ingestion and
+review count and join date when available. Client metadata now survives extension ingestion and
 validation. Extraction reads explicitly client-labelled fields within each card
-(`.client-rating-score`, `.client-review-count`, or equivalent `data-field` names).
+(`.client-rating-score`, `.client-review-count`, `.client-join-date`,
+`.client-joined-at`, or equivalent `data-field` names).
 These selectors are covered by synthetic tests, not verified current live layouts.
 Actual platform markup may require an update using a sanitized card sample.
 Missing fields remain absent; no profile requests or invented values are used.

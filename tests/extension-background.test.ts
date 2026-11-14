@@ -7,7 +7,7 @@ interface Reply { ok: boolean; status?: string; errorCode?: string; error?: stri
 const extraction = { status: 'ok', detail: 'Extracted.', diagnostics: { linksChecked: 2, visibleProjectLinks: 1, matchedCards: 1, extractedProjects: 1 },
   payload: { platform: 'PeoplePerHour', pageUrl: 'https://www.peopleperhour.com/freelance-jobs', projects: [{ sourceId: '1', title: 'Python API', url: 'https://www.peopleperhour.com/freelance-jobs/python-1' }] } };
 
-function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus?: number; networkDown?: boolean; authStatus?: number; backendInvalid?: boolean; discarded?: boolean; pending?: boolean } = {}) {
+function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus?: number; networkDown?: boolean; authStatus?: number; backendInvalid?: boolean; discarded?: boolean; pending?: boolean; monitoring?: unknown } = {}) {
   const storage: Record<string, unknown> = { accountSession: { token: 'synthetic-test-secret', localId: 'scope1', expiresAt: Date.now() + 1000000 } };
   let listener!: (message: unknown, sender: unknown, reply: (value: Reply) => void) => boolean;
   const pageMessages: unknown[] = [];
@@ -39,11 +39,11 @@ function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus
     fetch: async (url: string, init: { method: string }) => {
       const path = new URL(url).pathname; requests.push({ path, method: init.method });
       if (options.networkDown) throw new Error('Do not expose synthetic-test-secret or upstream URL');
-      if (path === '/v1/session') return Response.json({ connected: true }, { status: options.authStatus ?? 200 });
+      if (path === '/v1/session') return Response.json({ connected: true, monitoring: options.monitoring }, { status: options.authStatus ?? 200 });
       if (path === '/v1/pairings/claim') return Response.json({ status: 'connected', sessionToken: 'synthetic-token', expiresAt: Date.now() + 100000 });
       const status = options.ingestStatus ?? 200;
       if (options.backendInvalid) return new Response('not JSON', { status: 200 });
-      return Response.json(status === 200 ? { baseline: true, inserted: 1, acceptedAt: '2026-11-14T00:00:00.000Z' } : { error: 'synthetic-test-secret' }, { status });
+      return Response.json(status === 200 ? { baseline: !options.monitoring, inserted: options.monitoring ? 0 : 1, monitoring: options.monitoring, acceptedAt: '2026-11-14T00:00:00.000Z' } : { error: 'synthetic-test-secret' }, { status });
     },
   });
   const send = (type: string) => new Promise<Reply>((resolve, reject) => {
@@ -91,6 +91,18 @@ test('successful Scan Now reaches the content script and ingestion, then records
   assert.equal(result.count, 1);
   assert.equal(result.lastSuccess, '2026-11-14T00:00:00.000Z');
   assert.deepEqual(w.requests, [{ path: '/v1/ingest', method: 'POST' }]);
+});
+
+test('accepted duplicate scans distinguish filter exclusion from delivery and fresh status reports it', async () => {
+  const w = worker({ monitoring: { afterBaseline: 16, matching: 0, keywordExcluded: 16, platformExcluded: 0, missingSearchMetadata: 16, alertsEnabled: true, deliveries: [] } });
+  const scan = await w.send('SCAN') as Reply & { detail: string };
+  assert.equal(scan.status, 'accepted');
+  assert.match(scan.detail, /No unseen project IDs/);
+  assert.match(scan.detail, /keyword excluded: 16/);
+  assert.match(scan.detail, /Deliveries: none/);
+  assert.match(scan.detail, /\/keywords all/);
+  const status = await w.send('GET_STATUS') as Reply & { monitoringDetail: string };
+  assert.match(status.monitoringDetail, /Matching current filters: 0/);
 });
 
 test('network, rejected data, server failures and forbidden requests retain distinct scan diagnostics', async () => {
