@@ -4,9 +4,9 @@ const backend = new URL(process.env.AUROX_BACKEND_URL || 'http://127.0.0.1:4318'
 if ((backend.protocol !== 'https:' && !(backend.protocol === 'http:' && backend.hostname === '127.0.0.1')) ||
   backend.username || backend.password || backend.pathname !== '/' || backend.search || backend.hash) throw new Error('AUROX_BACKEND_URL must be an HTTPS origin (HTTP loopback is development only).');
 const manifest = {
-  manifest_version: 3, name: 'Aurox Job Monitor', version: '0.2.2', minimum_chrome_version: '120',
+  manifest_version: 3, name: 'Aurox Job Monitor', version: '0.4.0', minimum_chrome_version: '120',
   description: 'Projects from your own visible Chrome pages, delivered only to your linked Telegram account.',
-  permissions: ['storage', 'activeTab'],
+  permissions: ['storage', 'activeTab', 'alarms'],
   host_permissions: [backend.origin + '/*', 'https://www.peopleperhour.com/*', 'https://www.guru.com/*'],
   background: { service_worker: 'dist/background.js' }, action: { default_popup: 'popup.html' },
   content_scripts: [{ matches: ['https://www.peopleperhour.com/*', 'https://www.guru.com/*'], js: ['dist/content.js'], run_at: 'document_idle', all_frames: false }],

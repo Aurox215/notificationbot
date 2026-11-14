@@ -7,19 +7,25 @@ interface Reply { ok: boolean; status?: string; errorCode?: string; error?: stri
 const extraction = { status: 'ok', detail: 'Extracted.', diagnostics: { linksChecked: 2, visibleProjectLinks: 1, matchedCards: 1, extractedProjects: 1 },
   payload: { platform: 'PeoplePerHour', pageUrl: 'https://www.peopleperhour.com/freelance-jobs', projects: [{ sourceId: '1', title: 'Python API', url: 'https://www.peopleperhour.com/freelance-jobs/python-1' }] } };
 
-function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus?: number; networkDown?: boolean; authStatus?: number; backendInvalid?: boolean } = {}) {
+function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus?: number; networkDown?: boolean; authStatus?: number; backendInvalid?: boolean; discarded?: boolean; pending?: boolean } = {}) {
   const storage: Record<string, unknown> = { accountSession: { token: 'synthetic-test-secret', localId: 'scope1', expiresAt: Date.now() + 1000000 } };
   let listener!: (message: unknown, sender: unknown, reply: (value: Reply) => void) => boolean;
   const pageMessages: unknown[] = [];
   const requests: { path: string; method: string }[] = [];
+  let alarmListener!: (alarm: { name: string }) => void;
+  let alarmCreated = false;
+  const reloaded: number[] = [];
+  const tab = { id: 7, active: false, url: 'https://www.peopleperhour.com/freelance-jobs', discarded: options.discarded ?? false };
+  if (options.pending) { delete storage.accountSession; storage.pendingLink = { pairingId: 'synthetic', pollSecret: 'synthetic', expiresAt: Date.now() + 100000 }; }
   const fakeChrome = {
+    alarms: { get: async () => alarmCreated ? {} : undefined, create: async () => { alarmCreated = true; }, clear: async () => { alarmCreated = false; return true; }, onAlarm: { addListener: (fn: typeof alarmListener) => { alarmListener = fn; } } },
     storage: { local: {
       setAccessLevel: async () => {},
       get: async (keys: string | string[] | null) => Object.fromEntries((keys === null ? Object.keys(storage) : typeof keys === 'string' ? [keys] : keys).filter(k => k in storage).map(k => [k, storage[k]])),
       set: async (data: Record<string, unknown>) => { Object.assign(storage, data); },
       remove: async (keys: string | string[]) => { for (const key of typeof keys === 'string' ? [keys] : keys) delete storage[key]; },
     } },
-    tabs: { query: async () => [{ id: 7, url: 'https://www.peopleperhour.com/freelance-jobs' }],
+    tabs: { query: async () => [tab], get: async () => tab, reload: async (id: number) => { reloaded.push(id); },
       sendMessage: async (_id: number, message: unknown) => {
         pageMessages.push(message);
         if (options.missing) throw new Error('Receiving end does not exist. Do not leak synthetic-test-secret');
@@ -29,11 +35,12 @@ function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus
       onMessage: { addListener: (fn: typeof listener) => { listener = fn; } } },
   };
   runInNewContext(readFileSync('extension/dist/background.js', 'utf8'), {
-    chrome: fakeChrome, URL, AbortSignal, setTimeout, clearTimeout,
+    chrome: fakeChrome, crypto: globalThis.crypto, URL, AbortSignal, setTimeout, clearTimeout,
     fetch: async (url: string, init: { method: string }) => {
       const path = new URL(url).pathname; requests.push({ path, method: init.method });
       if (options.networkDown) throw new Error('Do not expose synthetic-test-secret or upstream URL');
       if (path === '/v1/session') return Response.json({ connected: true }, { status: options.authStatus ?? 200 });
+      if (path === '/v1/pairings/claim') return Response.json({ status: 'connected', sessionToken: 'synthetic-token', expiresAt: Date.now() + 100000 });
       const status = options.ingestStatus ?? 200;
       if (options.backendInvalid) return new Response('not JSON', { status: 200 });
       return Response.json(status === 200 ? { baseline: true, inserted: 1, acceptedAt: '2026-11-14T00:00:00.000Z' } : { error: 'synthetic-test-secret' }, { status });
@@ -43,7 +50,8 @@ function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus
     const accepted = listener({ type }, { id: 'self', url: 'chrome-extension://self/popup.html' }, resolve);
     if (!accepted) reject(new Error('Listener refused popup request'));
   });
-  return { send, storage, pageMessages, requests };
+  const tick = async () => { alarmListener({ name: 'aurox-loaded-listings' }); for (let i = 0; i < 4; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  return { send, storage, pageMessages, requests, tick, reloaded };
 }
 
 test('paired backend can be healthy while Scan Now fails to reach a stale/missing content script', async () => {
@@ -131,4 +139,85 @@ test('structure diagnostics are disabled in the normal release build and make no
   assert.equal(result.errorCode, 'developer_diagnostics_disabled');
   assert.equal(w.pageMessages.length, 0);
   assert.equal(w.requests.length, 0);
+});
+
+test('alarm polls inactive listing tabs at a 30-second floor without reloading', async () => {
+  const w = worker();
+  await w.tick();
+  assert.equal(w.requests.filter(r => r.path === '/v1/ingest').length, 1);
+  assert.equal(w.reloaded.length, 0);
+  assert.equal((w.pageMessages[0] as { type: string }).type, 'POLL_PAGE');
+  w.storage['poll:scope1:PeoplePerHour'] = Date.now() - 31000;
+  await w.tick();
+  assert.equal(w.reloaded.length, 0);
+  const count = w.pageMessages.length;
+  await w.tick();
+  assert.equal(w.pageMessages.length, count);
+});
+
+test('Stop scan persists and prevents alarm scans, submissions, and refresh; Continue resumes', async () => {
+  const w = worker();
+  const stopped = await w.send('TOGGLE_SCAN') as Reply & { scanningEnabled: boolean };
+  assert.equal(stopped.scanningEnabled, false);
+  assert.equal(w.storage.scanEnabled, false);
+  w.storage['refresh:scope1:7'] = Date.now() - 31000;
+  await w.tick();
+  assert.equal(w.requests.length, 0);
+  assert.equal(w.reloaded.length, 0);
+  assert.equal((await w.send('SCAN')).errorCode, 'scanning_paused');
+  await w.send('TOGGLE_SCAN');
+  for (let i = 0; i < 4; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(w.storage.scanEnabled, true);
+  assert.ok(w.requests.some(r => r.path === '/v1/ingest'));
+});
+
+test('alarm does not reload challenges, login/unknown layouts, or discarded tabs', async () => {
+  for (const status of ['verification_required', 'login_required', 'no_projects']) {
+    const w = worker({ extraction: { status, detail: 'Restricted or not ready.' } });
+    w.storage['refresh:scope1:7'] = Date.now() - 31000;
+    await w.tick();
+    assert.equal(w.requests.filter(r => r.path === '/v1/ingest').length, 0);
+    assert.equal(w.reloaded.length, 0);
+  }
+  const discarded = worker({ discarded: true });
+  await discarded.tick();
+  assert.equal(discarded.pageMessages.length, 0);
+});
+
+test('approved pairing completes and starts scanning via alarm without reopening the popup', async () => {
+  const w = worker({ pending: true });
+  await w.tick();
+  assert.ok(w.storage.accountSession);
+  assert.equal(w.storage.scanEnabled, true);
+  assert.ok(w.requests.some(r => r.path === '/v1/pairings/claim'));
+  assert.ok(w.requests.some(r => r.path === '/v1/ingest'));
+});
+
+test('confirmed logout pauses its platform and stale public DOM cannot clear it or ingest', async () => {
+  const w = worker();
+  w.storage['blocked:scope1:PeoplePerHour'] = 'login_required';
+  w.storage['platform-auth:scope1:PeoplePerHour'] = { state: 'expired/logged_out', reason: 'authentication_rejected' };
+  assert.equal((await w.send('SCAN')).status, 'login_required');
+  assert.equal(w.requests.filter(r => r.path === '/v1/ingest').length, 0);
+  assert.equal(w.storage['blocked:scope1:PeoplePerHour'], 'login_required');
+  assert.equal((w.storage['platform-auth:scope1:PeoplePerHour'] as { state: string }).state, 'expired/logged_out');
+  assert.equal(w.storage['platform-auth:scope1:Guru'], undefined);
+});
+
+test('public listing and network failure cannot assert an authenticated platform session', async () => {
+  for (const status of ['ok', 'poll_failed', 'poll_unsupported', 'verification_required']) {
+    const w = worker({ extraction: { ...extraction, status } });
+    await w.send('SCAN');
+    assert.equal((w.storage['platform-auth:scope1:PeoplePerHour'] as { state: string }).state, 'unknown');
+  }
+});
+
+test('confirmed rejection records no credentials and queues only the affected platform status', async () => {
+  const w = worker({ extraction: { status: 'login_required', detail: 'HTTP 401', authentication: { state: 'expired/logged_out', reason: 'authentication_rejected' } } });
+  await w.send('SCAN');
+  assert.equal(w.storage['blocked:scope1:PeoplePerHour'], 'login_required');
+  assert.deepEqual(JSON.parse(JSON.stringify(w.storage['platform-auth:scope1:PeoplePerHour'])).state, 'expired/logged_out');
+  assert.equal(w.requests.filter(r => r.path === '/v1/platform-access').length, 1);
+  assert.equal(w.requests.filter(r => r.path === '/v1/ingest').length, 0);
+  assert.ok(!JSON.stringify(w.storage['platform-auth:scope1:PeoplePerHour']).includes('synthetic-test-secret'));
 });

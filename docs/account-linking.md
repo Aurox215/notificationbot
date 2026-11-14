@@ -11,8 +11,8 @@ One shared backend and one Telegram bot serve all users. Users do not need Node.
 1. Install the configured extension and click **Connect Telegram**.
 2. Open the Telegram tab created by the extension.
 3. Compare the code in Telegram with the code in the extension.
-4. If you started the connection and the codes match, send `/confirm CODE`.
-5. Return to the extension to finish connecting.
+4. If you started the connection and the codes match, tap **Connect this browser**. No typed message is needed.
+5. Pairing finishes and scanning starts automatically, even if the popup is closed.
 
 Confirmation enables alerts. Connection requests expire after **5 minutes**. Each installation gets a separate session that expires after **30 days**.
 
@@ -34,9 +34,9 @@ Old projects from the shared administrator prototype are retained but never broa
 
 ## What the extension monitors
 
-The extension watches changes to visible project cards on supported pages. **Scan Now** remains available.
+The extension watches loaded project listings in foreground and background tabs. **Stop scan / Continue scan** controls scanning; Scan Now has been removed from the popup.
 
-It does **not** refresh pages or retrieve new listings. If the website does not update its cards, the user must refresh normally. No automatic 30-second refresh is enabled because permission and a permitted frequency remain unverified.
+Version 0.4.0 polls listing HTML about every 30 seconds without reloading tabs. Authenticated login reports queue owner-only deduplicated Telegram notices. Login/verification pauses website requests. JavaScript shells and unsupported layouts are reported explicitly; no private endpoint or bypass fallback exists. See [background polling](background-polling.md).
 
 Login, CAPTCHA, and verification pages stop project submission. The extension does not bypass them or send website passwords/cookies to the backend.
 

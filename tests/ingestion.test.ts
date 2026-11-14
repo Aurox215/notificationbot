@@ -207,6 +207,26 @@ test('Telegram confirmation cannot be approved in a group or using a different s
   } finally { store.close(); }
 });
 
+test('Telegram inline button approves without typed confirmation and preserves owner/replay checks', async () => {
+  const store = new Store(':memory:', []);
+  const accounts = new AccountLinks(store, 'AuroxTestBot');
+  const keyboards: unknown[] = [];
+  const handler = new CommandHandler(store, { send: async (_text, _id, keyboard) => { if (keyboard) keyboards.push(keyboard); } }, 5000, 60000, accounts);
+  const proof = 'proof'.repeat(15);
+  const link = accounts.start(proof);
+  try {
+    await handler.handle({ update_id: 1, message: { text: '/start ' + new URL(link.telegramUrl).searchParams.get('start'), from: { id: 1 }, chat: { id: 1, type: 'private' } } });
+    assert.equal(keyboards.length, 1);
+    await handler.handle({ update_id: 2, callback_query: { id: 'wrong', data: 'connect:' + link.confirmationCode, from: { id: 2 }, message: { chat: { id: 2, type: 'private' } } } });
+    assert.equal(accounts.claim(link.pairingId, proof).status, 'pending');
+    await handler.handle({ update_id: 3, callback_query: { id: 'right', data: 'connect:' + link.confirmationCode, from: { id: 1 }, message: { chat: { id: 1, type: 'private' } } } });
+    assert.equal(accounts.claim(link.pairingId, proof).status, 'connected');
+    assert.equal(store.user('1')!.subscribed, true);
+    await handler.handle({ update_id: 4, callback_query: { id: 'repeat', data: 'connect:' + link.confirmationCode, from: { id: 1 }, message: { chat: { id: 1, type: 'private' } } } });
+    assert.equal(accounts.claim(link.pairingId, proof).status, 'invalid');
+  } finally { store.close(); }
+});
+
 test('HTTP pairing, session authentication and malicious owner fields cannot redirect notifications', async () => {
   const store = new Store(':memory:', []);
   const accounts = new AccountLinks(store, 'AuroxTestBot');
@@ -246,6 +266,18 @@ test('HTTP pairing, session authentication and malicious owner fields cannot red
     const sent: string[] = [];
     await new Monitor(store, [], { send: async (_text, id) => { sent.push(id); } }, 0).tick(new AbortController().signal);
     assert.deepEqual(sent, ['1']);
+    assert.equal((await post('/v1/platform-access', { platform: 'Guru', status: 'login_required', userId: '2' }, token)).status, 200);
+    assert.deepEqual(store.loginNotices('1'), ['Guru']);
+    assert.deepEqual(store.loginNotices('2'), []);
+    const loginAlerts: { text: string; id: string }[] = [];
+    const notify = new Monitor(store, [], { send: async (text, id) => { loginAlerts.push({ text, id }); } }, 0);
+    await notify.tick(new AbortController().signal);
+    await post('/v1/platform-access', { platform: 'Guru', status: 'login_required' }, token);
+    await notify.tick(new AbortController().signal);
+    assert.equal(loginAlerts.length, 1);
+    assert.equal(loginAlerts[0]!.id, '1');
+    assert.match(loginAlerts[0]!.text, /Guru: login required/);
+    assert.equal((await post('/v1/platform-access', { platform: 'Other', status: 'login_required' }, token)).status, 400);
     assert.equal((await post('/v1/ingest', { ...batch(), projects: [batch().projects[0], { title: 'bad' }] }, token)).status, 400);
     const tooLarge = await fetch(url + '/v1/ingest', { method: 'POST', headers, body: 'x'.repeat(270000) });
     assert.equal(tooLarge.status, 413);
@@ -255,4 +287,43 @@ test('HTTP pairing, session authentication and malicious owner fields cannot red
     assert.equal((await fetch(url + '/health', { headers })).status, 401);
     assert.equal((await post('/v1/pairings/claim', { pairingId: link.pairingId, pollSecret: proof })).status, 410);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); }
+});
+
+test('login-notice deduplication survives restarts and suppresses rapid logout/login flapping', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bidbot-login-'));
+  const path = join(directory, 'state.sqlite');
+  let store = new Store(path, []);
+  try {
+    store.ensureUser('1', '1'); store.preferences('1', { subscribed: true });
+    store.recordAccess('1', 'Guru', 'login_required');
+    assert.equal(store.claimLoginNotice('1', 'Guru'), true);
+    store.finishLoginNotice('1', 'Guru', 'sent');
+    store.close(); store = new Store(path, []);
+    store.recordAccess('1', 'Guru', 'login_required');
+    assert.deepEqual(store.loginNotices('1'), []);
+    store.recordAccess('1', 'Guru', 'ok');
+    store.recordAccess('1', 'Guru', 'login_required');
+    assert.deepEqual(store.loginNotices('1'), []);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('PeoplePerHour logout uses the same owner-only deduplicated notice workflow as Guru', async () => {
+  const store = new Store(':memory:', []);
+  try {
+    for (const id of ['1', '2']) { store.ensureUser(id, id); store.preferences(id, { subscribed: true }); }
+    const sent: { text: string; chatId: string }[] = [];
+    const monitor = new Monitor(store, [], { send: async (text, chatId) => { sent.push({ text, chatId }); } }, 0);
+    store.recordAccess('1', 'PeoplePerHour', 'login_required');
+    await monitor.tick(new AbortController().signal);
+    store.recordAccess('1', 'PeoplePerHour', 'login_required');
+    await monitor.tick(new AbortController().signal);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]!.chatId, '1');
+    assert.match(sent[0]!.text, /^PeoplePerHour: login required/);
+    assert.equal(store.history('2').length, 0);
+    store.recordAccess('1', 'Guru', 'login_required');
+    await monitor.tick(new AbortController().signal);
+    assert.equal(sent.length, 2);
+    assert.match(sent[1]!.text, /^Guru: login required/);
+  } finally { store.close(); }
 });

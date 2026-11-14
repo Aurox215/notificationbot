@@ -1,5 +1,5 @@
 import type { Store } from '../persistence/store.js';
-import type { TelegramUpdate } from '../telegram/client.js';
+import type { TelegramUpdate, InlineKeyboard } from '../telegram/client.js';
 import { platforms, type Platform } from '../sources/types.js';
 import { monitoringHealth } from '../monitoring/health.js';
 import type { AccountLinks } from '../ingestion/accounts.js';
@@ -21,11 +21,21 @@ export const help = `Mock freelance alerts — no live platform monitoring.
 Matching uses any keyword in title, description, category or skills.
 Subscribing or resuming delivers matching mock fixtures not previously sent.`;
 
-export interface Messenger { send(text: string, chatId: string): Promise<void> }
+export interface Messenger { send(text: string, chatId: string, keyboard?: InlineKeyboard): Promise<void>; answerCallback?(id: string, text: string): Promise<void> }
 export class CommandHandler {
   constructor(private readonly store: Store, private readonly messenger: Messenger, private readonly intervalMs: number,
     private readonly healthStaleMs = Math.max(60000, intervalMs * 3), private readonly accounts?: AccountLinks) {}
   async handle(update: TelegramUpdate): Promise<void> {
+    const callback = update.callback_query;
+    if (callback) {
+      if (!callback.message || callback.from.is_bot || callback.message.chat.type !== 'private' || callback.message.chat.id !== callback.from.id || !/^connect:[A-F0-9]{8}$/.test(callback.data ?? '')) return;
+      const id = String(callback.from.id);
+      const approved = this.accounts?.approve(id, callback.data!.slice(8)) ?? false;
+      if (approved) this.store.preferences(id, { subscribed: true, paused: false });
+      await this.messenger.answerCallback?.(callback.id, approved ? 'Browser connected.' : 'Connection expired or already approved.');
+      await this.messenger.send(approved ? 'Your browser is approved. Scanning starts automatically; no command or Scan Now click is needed. Use Stop scan in the extension to pause collection.' : 'This connection is expired, already approved, or belongs to another account. Start Connect Telegram again if needed.', id);
+      return;
+    }
     const message = update.message;
     if (!message?.text || message.chat.type !== 'private' || !message.from || message.from.is_bot) return;
     // Private chat identity is verified by Telegram; never accept an ID from command arguments.
@@ -37,8 +47,9 @@ export class CommandHandler {
     const command = match[1]!.toLowerCase();
     const argument = match[2]?.trim() ?? '';
     const extensionMode = this.store.getState('source_mode') === 'extension';
-    const activeHelp = extensionMode ? help.replace('Mock freelance alerts — no live platform monitoring.', 'Manual browser scans — no automated website polling.').replaceAll('mock fixtures', 'scanned projects') : help;
+    const activeHelp = extensionMode ? help.replace('Mock freelance alerts — no live platform monitoring.', 'Browser monitoring — control collection with Stop scan / Continue scan in your extension.').replaceAll('mock fixtures', 'scanned projects') : help;
     let reply: string;
+    let keyboard: InlineKeyboard | undefined;
     switch (command) {
       case 'confirm':
         if (this.accounts?.approve(id, argument.toUpperCase())) {
@@ -86,9 +97,10 @@ export class CommandHandler {
     }
     if (command === 'start' && argument.startsWith('aurox_')) {
       const code = this.accounts?.propose(argument, id);
-      reply = code ? `Connect your Aurox Job Monitor browser?\nCompare this code with the code in YOUR extension: ${code}\nOnly if they match and you initiated this connection, send:\n/confirm ${code}\nThis enables alerts only from your linked browser. If you did not initiate this, do not confirm.` : 'This browser connection is invalid, expired, or already used. Click Connect Telegram again in the extension.';
+      reply = code ? `Connect your Aurox Job Monitor browser?\nCompare this code with your extension: ${code}\nIf you initiated this connection and the codes match, tap Connect this browser below. Nothing needs to be typed. Ignore unsolicited connection links.` : 'This browser connection is invalid, expired, or already used. Click Connect Telegram again in the extension.';
+      if (code) keyboard = { inline_keyboard: [[{ text: 'Connect this browser', callback_data: `connect:${code}` }]] };
     }
     if (extensionMode) reply = reply.replaceAll('mock project alerts', 'manually scanned project alerts').replace('Mock alerts resumed.', 'Manual scan alerts resumed.').replace('Mode: MOCK (not live)', 'Mode: EXTENSION (your browser)').replaceAll('(mock)', '(your browser)');
-    await this.messenger.send(reply, String(message.chat.id));
+    await this.messenger.send(reply, String(message.chat.id), keyboard);
   }
 }

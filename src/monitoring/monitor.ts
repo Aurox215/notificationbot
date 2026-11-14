@@ -36,6 +36,21 @@ export class Monitor {
       // Browser projects are selected by owner. Legacy unowned browser rows never dispatch.
       const shared = this.store.getState('source_mode') === 'extension' ? [] : this.store.projects(true, 'monitor');
       for (const initialUser of this.store.users()) {
+        for (const platform of this.store.loginNotices(initialUser.id)) {
+          if (signal.aborted) return;
+          const wait = this.nextSendAt - Date.now();
+          if (wait > 0) { try { await delay(wait, undefined, { signal }); } catch { return; } }
+          const user = this.store.user(initialUser.id)!;
+          if (!user.subscribed || user.paused || !user.platforms.includes(platform) || !this.store.claimLoginNotice(user.id, platform)) continue;
+          this.nextSendAt = Date.now() + this.sendSpacingMs;
+          try {
+            await this.messenger.send(`${platform}: login required. Please open ${platform} in your own Chrome browser and sign in normally to resume project monitoring.`, user.chatId);
+            this.store.finishLoginNotice(user.id, platform, 'sent');
+          } catch (error) {
+            if (error instanceof TelegramError && error.code === 429) this.store.finishLoginNotice(user.id, platform, 'pending', Date.now() + error.retryAfter * 1000);
+            else this.store.finishLoginNotice(user.id, platform, error instanceof TelegramError && error.code >= 400 && error.code < 500 ? 'failed' : 'unknown');
+          }
+        }
         const candidates = [...shared.map(p => ({ ...p, owned: false })),
           ...this.store.browserProjects(initialUser.id).map(p => ({ ...p, owned: true }))];
         for (const { id: projectId, project, owned } of candidates) {

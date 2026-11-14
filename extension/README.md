@@ -11,8 +11,8 @@ The shared service and Telegram bot are managed by the operator. End users do no
 1. Install the operator-supplied extension and open its popup.
 2. Click **Connect Telegram**. A Telegram tab opens in the background.
 3. Compare the confirmation code in your extension with the bot's code.
-4. Only if the codes match and you initiated the connection, send **/confirm CODE** in the private bot chat.
-5. Return to the popup. It completes the one-time connection automatically.
+4. If the codes match and you initiated the connection, tap **Connect this browser** in Telegram. You do not type a confirmation message.
+5. The extension finishes pairing and starts scanning automatically, even with the popup closed. Telegram may require a one-time Start tap before displaying the approval button.
 
 Connecting enables your subscription. Never confirm a connection someone else initiated. A Telegram link alone does not authorize a browser.
 
@@ -27,11 +27,11 @@ Open either listing page normally:
 
 Complete normal login or verification yourself. The extension does not interact with those controls.
 
-While the tab is visible, the extension notices DOM changes and reads supported rendered project cards. You can also click **Scan Now**. Hidden/unloaded/virtualized content is not fetched. The popup shows the current website, count, last accepted scan and connection/page status.
+The extension notices DOM changes in loaded foreground and background tabs and scans them automatically. Use **Stop scan / Continue scan** to control all supported tabs in this installation. The Scan Now button has been removed. Hidden/unloaded/virtualized content is not fetched. The popup shows the current website, count, last accepted scan and connection/page status.
 
 **The first accepted nonempty batch for each user and platform stays silent.** Later unseen projects can notify only you, subject to your Telegram preferences. Repeated scans and restarts do not reset the baseline.
 
-DOM observation does not refresh the page. If the website does not update its cards, no new cards can be detected until the page changes. There is no automated 30-second refresh or retrieval.
+Version 0.4.0 requests listing HTML about every 30 seconds while enabled, without reloading tabs. Login or verification pauses polling; login reports queue a deduplicated notice only for your Telegram account. JavaScript shells and unsupported HTML are reported, not bypassed. Chrome must remain running with loaded tabs. See [background polling details](../docs/background-polling.md).
 
 The baseline covers the initial rendered snapshot, not every project on the site. Later filtering, pagination or delayed rendering can reveal older projects that are new to your database. Missing fields remain absent; displayed relative publication times are not converted into invented dates.
 
@@ -45,7 +45,7 @@ No Telegram bot token, browser cookies or platform login credentials are collect
 
 ## Troubleshooting
 
-For Scan Now errors, follow the [Chrome scan diagnostic steps](../docs/scan-diagnostics.md). The popup separates a fresh connection check from the last scan result and shows whether the content script responded and ingestion was attempted.
+For extraction diagnostics, follow the [Chrome scan diagnostic steps](../docs/scan-diagnostics.md). The popup separates a fresh connection check from the last scan result and shows whether the content script responded and ingestion was attempted.
 
 If PeoplePerHour shows recognized links but zero cards, see the [v0.2.2 card extraction fix](../docs/peopleperhour-extraction.md), including the optional sanitized developer layout report.
 
@@ -54,7 +54,7 @@ If PeoplePerHour shows recognized links but zero cards, see the [v0.2.2 card ext
 | Not connected | Click Connect Telegram and complete code confirmation. |
 | Pairing expired or connection unavailable | Reopen the popup or start Connect Telegram again. Requests expire after five minutes. |
 | Login or verification | Complete normal website access yourself and return to listings. |
-| No projects | Wait for normal page loading, or use Scan Now. The live layout may need updated selectors. |
+| No projects | Wait for normal page loading and the next automatic cycle. The live layout may need updated selectors. |
 | No notification | Check /status and preferences. Initial baselines and repeats stay silent. |
 | Backend unavailable | Retry later or contact the service operator; no local backend is required for a hosted release. |
 

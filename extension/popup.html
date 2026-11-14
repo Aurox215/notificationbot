@@ -3,12 +3,14 @@
 <body><h1>Aurox Job Monitor</h1><p>Alerts from your own browser to your own Telegram.</p>
 <button id="connect" type="button">Connect Telegram</button> <button id="disconnect" type="button">Disconnect</button>
 <p id="confirmation" role="status"></p>
+<button id="toggle" type="button" disabled>Continue scan</button>
 <dl><dt>Website</dt><dd id="website">Checking...</dd><dt>Detected projects</dt><dd id="count">0</dd>
 <dt>Last accepted scan</dt><dd id="lastSuccess">Never</dd><dt>Telegram connection</dt><dd id="connection">Checking...</dd></dl>
 <p id="connectionChecked">Connection has not been checked.</p>
+<p id="platformAuthentication">Platform authentication: unknown.</p>
 <button id="check" type="button">Check connection</button>
 <p id="attempt">No scan attempted.</p><p id="diagnostics"></p>
-<p id="status" role="status">Ready.</p><button id="scan" type="button">Scan Now</button>
-<p>Watches changes on visible listing pages. Does not refresh or retrieve listings.</p>
+<p id="status" role="status">Ready.</p>
+<p>Checks listing HTML in the background about every 30 seconds without reloading tabs. Login or verification pauses requests for that platform.</p>
 <details id="developer" hidden><summary>Developer layout diagnostic</summary><p>Local layout only. No text, HTML, project IDs, URLs, cookies, or account data are included. Nothing is uploaded.</p><button id="structure" type="button">Inspect card structure</button><pre id="structureReport" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
 <script src="dist/popup.js"></script></body></html>

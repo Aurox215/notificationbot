@@ -10,7 +10,7 @@ test('DOM observation scans changed visible cards, preserves Scan Now and never 
   Object.defineProperty(document, 'visibilityState', { value: 'visible', writable: true });
   const timers = new Map<number, () => void>(); let sequence = 0;
   let mutation!: () => void;
-  let listener!: (message: { type: string }, sender: { id: string }, reply: (value: unknown) => void) => void;
+  let listener!: (message: { type: string; enabled?: boolean }, sender: { id: string }, reply: (value: unknown) => void) => void;
   const messages: { type: string; extraction: { status: string; payload?: { projects: unknown[] } } }[] = [];
   let networkCalls = 0;
   const source = readFileSync(resolve('extension/dist/content.js'), 'utf8');
@@ -22,7 +22,7 @@ test('DOM observation scans changed visible cards, preserves Scan Now and never 
     clearTimeout: (id: number) => { timers.delete(id); },
     fetch: () => { networkCalls++; throw new Error('Unexpected website retrieval'); },
     chrome: { runtime: { id: 'self', onMessage: { addListener: (fn: typeof listener) => { listener = fn; } },
-      sendMessage: async (message: typeof messages[number]) => { messages.push(message); return { accepted: true }; } } },
+      sendMessage: async (message: typeof messages[number]) => { if (message.type === 'GET_SCAN_STATE') return { enabled: true }; messages.push(message); return { accepted: true }; } } },
   });
   const flush = async () => {
     const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach(fn => fn());
@@ -44,4 +44,12 @@ test('DOM observation scans changed visible cards, preserves Scan Now and never 
   assert.equal(messages.at(-1)!.extraction.status, 'verification_required');
   assert.equal(messages.at(-1)!.extraction.payload, undefined);
   assert.equal(networkCalls, 0);
+  listener({ type: 'SCAN_STATE_CHANGED', enabled: false }, { id: 'self' }, () => {});
+  const stoppedCount = messages.length;
+  mutation(); await flush();
+  assert.equal(messages.length, stoppedCount);
+  Object.defineProperty(document, 'visibilityState', { value: 'hidden', writable: true });
+  listener({ type: 'SCAN_STATE_CHANGED', enabled: true }, { id: 'self' }, () => {});
+  await flush();
+  assert.equal(messages.length, stoppedCount + 1); // Background tabs are no longer excluded.
 });

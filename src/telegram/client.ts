@@ -5,20 +5,22 @@ export class TelegramError extends Error {
 }
 export interface TelegramUpdate {
   update_id: number;
+  callback_query?: { id: string; data?: string; from: { id: number; is_bot?: boolean }; message?: { chat: { id: number; type: string } } };
   message?: { text?: string; from?: { id: number; is_bot?: boolean }; chat: { id: number; type: string } };
 }
+export interface InlineKeyboard { inline_keyboard: { text: string; callback_data: string }[][] }
 
 export class TelegramClient {
   constructor(private readonly config: TelegramConfig, private readonly request: typeof fetch = fetch) {}
 
-  async send(text: string, chatId = this.config.chatId): Promise<void> {
+  async send(text: string, chatId = this.config.chatId, keyboard?: InlineKeyboard): Promise<void> {
     if (!text.trim() || text.length > 4096) throw new Error('Telegram text must contain 1–4096 characters.');
     let response: Response;
     try {
       response = await this.request(`https://api.telegram.org/bot${this.config.token}/sendMessage`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text, link_preview_options: { is_disabled: true } }),
+        body: JSON.stringify({ chat_id: chatId, text, link_preview_options: { is_disabled: true }, ...(keyboard ? { reply_markup: keyboard } : {}) }),
         signal: AbortSignal.timeout(this.config.timeoutMs),
       });
     } catch {
@@ -38,12 +40,22 @@ export class TelegramClient {
     }
   }
 
+  async answerCallback(id: string, text: string): Promise<void> {
+    // Best-effort UI acknowledgement. Approval is already committed independently.
+    try {
+      await this.request(`https://api.telegram.org/bot${this.config.token}/answerCallbackQuery`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ callback_query_id: id, text }), signal: AbortSignal.timeout(this.config.timeoutMs),
+      });
+    } catch { /* Never expose token-bearing URLs. */ }
+  }
+
   async getUpdates(offset: number, signal: AbortSignal): Promise<TelegramUpdate[]> {
     let response: Response;
     try {
       response = await this.request(`https://api.telegram.org/bot${this.config.token}/getUpdates`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ offset, timeout: 25, allowed_updates: ['message'] }),
+        body: JSON.stringify({ offset, timeout: 25, allowed_updates: ['message', 'callback_query'] }),
         signal: AbortSignal.any([signal, AbortSignal.timeout(35000)]),
       });
     } catch { throw new Error('Telegram update request failed or timed out.'); }

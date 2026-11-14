@@ -44,6 +44,11 @@ export class Store {
       CREATE TABLE IF NOT EXISTS extension_sessions (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), token_hash TEXT NOT NULL UNIQUE,
         expires_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS platform_access (
+        user_id TEXT NOT NULL REFERENCES users(id), platform TEXT NOT NULL, status TEXT NOT NULL,
+        notice_state TEXT NOT NULL DEFAULT 'none', last_notice_at INTEGER NOT NULL DEFAULT 0,
+        retry_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,platform));
+      UPDATE platform_access SET notice_state='unknown',last_notice_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE notice_state='sending';
       UPDATE browser_notifications SET state='unknown' WHERE state='sending';
       UPDATE notifications SET state='unknown' WHERE state='sending';`);
     const columns = this.db.prepare('PRAGMA table_info(projects)').all().map(row => row.name);
@@ -51,6 +56,27 @@ export class Store {
     if (!columns.includes('origin')) this.db.exec("ALTER TABLE projects ADD COLUMN origin TEXT NOT NULL DEFAULT 'monitor'");
   }
   close(): void { this.db.close(); }
+  recordAccess(userId: string, platform: Platform, status: 'ok' | 'login_required' | 'verification_required', now = Date.now()): void {
+    this.db.prepare(`INSERT INTO platform_access(user_id,platform,status,notice_state) VALUES(?,?,?,?)
+      ON CONFLICT(user_id,platform) DO UPDATE SET status=excluded.status,
+      notice_state=CASE WHEN excluded.status!='login_required' THEN 'none'
+        WHEN platform_access.status!='login_required' THEN 'pending' ELSE platform_access.notice_state END,
+      retry_at=CASE WHEN excluded.status='login_required' AND platform_access.status!='login_required'
+        THEN MAX(?,CASE WHEN platform_access.last_notice_at>0 THEN platform_access.last_notice_at+1800000 ELSE 0 END) ELSE platform_access.retry_at END`)
+      .run(userId, platform, status, status === 'login_required' ? 'pending' : 'none', now);
+  }
+  loginNotices(userId: string): Platform[] {
+    return this.db.prepare("SELECT platform FROM platform_access WHERE user_id=? AND status='login_required' AND notice_state='pending' AND retry_at<=?")
+      .all(userId, Date.now()).map(row => row.platform as Platform);
+  }
+  claimLoginNotice(userId: string, platform: Platform): boolean {
+    return this.db.prepare("UPDATE platform_access SET notice_state='sending' WHERE user_id=? AND platform=? AND status='login_required' AND notice_state='pending' AND retry_at<=?")
+      .run(userId, platform, Date.now()).changes === 1;
+  }
+  finishLoginNotice(userId: string, platform: Platform, state: 'sent' | 'unknown' | 'failed' | 'pending', retryAt = 0): void {
+    this.db.prepare("UPDATE platform_access SET notice_state=?,retry_at=?,last_notice_at=CASE WHEN ?='pending' THEN last_notice_at ELSE ? END WHERE user_id=? AND platform=?")
+      .run(state, retryAt, state, Date.now(), userId, platform);
+  }
   ensureUser(id: string, chatId: string): User {
     this.db.prepare(`INSERT INTO users(id,chat_id,keywords,platforms) VALUES(?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET chat_id=excluded.chat_id`).run(id, chatId, JSON.stringify(this.defaults), JSON.stringify(['PeoplePerHour', 'Guru']));

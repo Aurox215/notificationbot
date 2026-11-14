@@ -1,9 +1,11 @@
 import { listingPlatform, canonicalProject } from '../../src/ingestion/identity.js';
 import type { ScanPayload, ExtractedProject } from '../../src/ingestion/schema.js';
 import { findProjectCard, isTitleLink } from './project-cards.js';
+import type { AuthenticationObservation } from './authentication.js';
 
 export interface Extraction {
-  status: 'ok' | 'login_required' | 'verification_required' | 'no_projects' | 'unsupported' | 'extraction_failed';
+  authentication?: AuthenticationObservation;
+  status: 'ok' | 'login_required' | 'verification_required' | 'no_projects' | 'unsupported' | 'extraction_failed' | 'poll_failed' | 'poll_unsupported';
   detail: string;
   payload?: ScanPayload;
   diagnostics?: { linksChecked: number; visibleProjectLinks: number; matchedCards: number; extractedProjects: number };
@@ -33,14 +35,19 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
   let url: URL;
   try { url = new URL(pageUrl); } catch { return { status: 'unsupported', detail: 'Unsupported URL.' }; }
   if (!['www.peopleperhour.com', 'www.guru.com'].includes(url.hostname) || url.protocol !== 'https:') return { status: 'unsupported', detail: 'Open a supported listing page.' };
+  if (/\/login(?:\.aspx)?\/?$/i.test(url.pathname) || /\/(?:site\/login|signin)/i.test(url.pathname)) return { status: 'login_required', detail: 'Login page detected. Sign in normally on this platform to resume monitoring.' };
   const pageText = text(document.body, 20000) ?? '';
   const heading = document.title + ' ' + Array.from(document.querySelectorAll('h1,h2,[role="alert"]')).map(e => text(e, 300) ?? '').join(' ');
   const challenge = /verify (?:that )?you(?:'re| are) (?:not a robot|human)|verify you are human|checking your browser|security verification|just a moment|access denied|javascript is disabled/i.test(heading + ' ' + pageText.slice(0,3000));
   const captcha = Array.from(document.querySelectorAll('iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="turnstile"],.g-recaptcha,.h-captcha')).some(visible);
-  if (challenge || captcha) return { status: 'verification_required', detail: 'Verification/CAPTCHA detected. Complete normal website access yourself; the extension will not interact with it.' };
+  if (challenge) return { status: 'verification_required', detail: 'Verification detected. Complete normal website access yourself; the extension will not interact with it.' };
+  if (/\b(?:you have been (?:logged|signed) out|(?:logged|signed) out successfully)\b/i.test(heading)) {
+    return { status: 'login_required', authentication: { state: 'expired/logged_out', reason: 'explicit_logout' }, detail: 'The platform explicitly confirms logout. Sign in normally to restore account access.' };
+  }
   if (/\/login(?:\.aspx)?\/?$/i.test(url.pathname) || /\/(?:site\/login|signin)/i.test(url.pathname) || Array.from(document.querySelectorAll('input[type="password"]')).some(visible)) {
     return { status: 'login_required', detail: 'Login page detected. Sign in yourself, then open the listing page and scan again.' };
   }
+  if (captcha) return { status: 'verification_required', detail: 'CAPTCHA detected. Complete normal website access yourself; the extension will not interact with it.' };
   const platform = listingPlatform(pageUrl);
   if (!platform) return { status: 'unsupported', detail: 'Scan only /freelance-jobs or /work/ listing pages.' };
   const projects = new Map<string, ExtractedProject>();
@@ -72,6 +79,15 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
     if (category) project.category = category;
     if (publishedAt) project.publishedAt = publishedAt;
     if (skills.length) project.skills = [...new Set(skills)];
+    // Read only explicitly client-labelled fields inside this project card.
+    // Never confuse project budgets, proposal counts or freelancer ratings with client metadata.
+    const ratingScore = field(card, '.client-rating-score,[data-field="client-rating-score"]', 60);
+    const reviews = field(card, '.client-review-count,[data-field="client-review-count"]', 60);
+    const reviewCount = reviews && /^(?:\d+|\d{1,3}(?:,\d{3})+)$/.test(reviews) ? Number(reviews.replace(/,/g, '')) : undefined;
+    if (ratingScore || (reviewCount !== undefined && Number.isSafeInteger(reviewCount))) {
+      project.client = { ...(ratingScore ? { ratingScore } : {}),
+        ...(reviewCount !== undefined && Number.isSafeInteger(reviewCount) ? { reviewCount } : {}) };
+    }
     projects.set(project.sourceId, project);
     if (projects.size >= 100) break;
   }

@@ -4,6 +4,7 @@ import type { Platform, SourceProject } from '../sources/types.js';
 export interface ExtractedProject {
   sourceId: string; url: string; title: string; budget?: string; description?: string;
   publishedAt?: string; category?: string; skills?: string[];
+  client?: { ratingScore?: string; reviewCount?: number };
 }
 export interface ScanPayload { platform: Platform; pageUrl: string; projects: ExtractedProject[] }
 
@@ -29,6 +30,14 @@ export function validateScan(value: unknown): { platform: Platform; projects: So
     if (raw.skills !== undefined) {
       if (!Array.isArray(raw.skills) || raw.skills.length > 30 || raw.skills.some(x => typeof x !== 'string' || !x.trim() || x.length > 60)) throw new Error('invalid_project');
       project.skills = [...new Set(raw.skills.map(x => x.trim()))];
+    }
+    if (raw.client !== undefined) {
+      if (!raw.client || typeof raw.client !== 'object' || Array.isArray(raw.client)) throw new Error('invalid_project');
+      const { ratingScore, reviewCount } = raw.client;
+      if (ratingScore !== undefined && (typeof ratingScore !== 'string' || !ratingScore.trim() || ratingScore.length > 60 || /[\u0000-\u001f]/.test(ratingScore))) throw new Error('invalid_project');
+      if (reviewCount !== undefined && (!Number.isSafeInteger(reviewCount) || reviewCount < 0)) throw new Error('invalid_project');
+      project.client = { ...(ratingScore !== undefined ? { ratingScore: ratingScore.trim() } : {}),
+        ...(reviewCount !== undefined ? { reviewCount } : {}) };
     }
     // Ignore unknown properties: never accept recipient IDs, notification flags, or client detection timestamps.
     if (!ids.has(project.sourceId)) { ids.add(project.sourceId); projects.push(project); }

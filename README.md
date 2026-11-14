@@ -16,31 +16,35 @@ With a configured release extension:
 
 1. Install **Aurox Job Monitor** and click **Connect Telegram**.
 2. Open the Telegram tab created by the extension.
-3. Compare the code in Telegram with the code in your extension. If you initiated the connection and the codes match, send `/confirm CODE`.
-4. Return to the extension to finish connecting.
+3. Compare the codes and tap **Connect this browser** in Telegram. No confirmation message needs to be typed.
+4. Pairing finishes automatically and scanning starts, even if the popup is closed.
 5. Open PeoplePerHour or Guru in your Chrome browser. Complete any normal login or verification yourself.
 
 Users do not run Node.js, edit .env files, enter extension IDs or ingestion tokens, or share freelance-site passwords.
 
-The extension observes changes to visible project cards. **Scan Now** is also available. The first accepted batch for each user and platform is saved silently. Later unseen projects can produce matching alerts only for that user.
+The extension observes loaded project cards and polls listing HTML in the background. Use **Stop scan / Continue scan**; there is no Scan Now button. The first accepted batch for each user and platform is saved silently. Later unseen projects can produce matching alerts only for that user.
 
 ## What observation does
 
 - Reads supported visible cards already loaded by the website.
-- Notices DOM changes while the tab is visible.
+- Notices DOM changes in loaded foreground and background tabs.
 - Sends metadata using that installation's authenticated session.
 - Leaves login, CAPTCHA and verification screens untouched.
 
-**Observation does not refresh the page or retrieve new listings.** If the website does not update its cards, manually refresh it normally. No 30-second refresh/retrieval is enabled: platform permission and a permitted frequency remain unverified.
+Version **0.4.0** requests listing HTML about every 30 seconds without reloading tabs. It queues owner-only Telegram login notices and pauses website requests on access restrictions. A JavaScript shell or unsupported HTTP response is reported explicitly. Live logged-in polling has not been verified here, and platform permission remains independently unverified. See [background polling and limits](docs/background-polling.md).
 
 Extraction rules are tested against saved synthetic HTML fixtures. Actual account-page layouts may require selector adjustments. A newly observed project can be older than its detection time.
+
+Platform account states are shown separately from Telegram connection. Confirmed
+logout pauses that platform; public listings never prove login. See
+[account authentication checks and limitations](docs/authentication-state.md).
 
 ## Telegram commands
 
 | Command | Action |
 | --- | --- |
 | `/start` | Register your private chat and show help |
-| `/confirm CODE` | Approve the browser connection whose code matches yours |
+| `/confirm CODE` | Legacy pairing command; the normal flow uses a Telegram button |
 | `/disconnect` | Revoke all your browser sessions |
 | `/subscribe` | Enable alerts |
 | `/pause` | Pause alerts |

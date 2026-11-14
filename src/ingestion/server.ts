@@ -49,7 +49,7 @@ export function createIngestionServer(store: Store, settings: IngestionConfig, a
     if (req.method === 'DELETE' && req.url === '/v1/session') {
       accounts.revoke(req.headers.authorization!); reply(200, { ok: true }); return;
     }
-    if (req.method !== 'POST' || !['/v1/pairings', '/v1/pairings/claim', '/v1/ingest'].includes(req.url ?? '')) {
+    if (req.method !== 'POST' || !['/v1/pairings', '/v1/pairings/claim', '/v1/ingest', '/v1/platform-access'].includes(req.url ?? '')) {
       reply(404, { error: 'not_found' }); return;
     }
     if (req.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json') { reply(415, { error: 'json_required' }); return; }
@@ -75,6 +75,13 @@ export function createIngestionServer(store: Store, settings: IngestionConfig, a
         const result = accounts.claim(input.pairingId, input.pollSecret);
         reply(result.status === 'invalid' ? 410 : 200, result); return;
       }
+      if (req.url === '/v1/platform-access') {
+        const input = data as { platform?: unknown; status?: unknown } | null;
+        if (!input || typeof input.platform !== 'string' || typeof input.status !== 'string' || !['PeoplePerHour', 'Guru'].includes(input.platform) || !['ok', 'login_required', 'verification_required'].includes(input.status)) { reply(400, { error: 'invalid_platform_status' }); return; }
+        if (accounts.authenticate(req.headers.authorization) !== userId) { reply(401, { error: 'session_required' }); return; }
+        store.recordAccess(userId!, input.platform as 'PeoplePerHour' | 'Guru', input.status as 'ok' | 'login_required' | 'verification_required');
+        reply(200, { ok: true }); return;
+      }
       let scan: ReturnType<typeof validateScan>;
       try { scan = validateScan(data); } catch {
         log('error', 'Browser batch rejected by validation.', { event: 'ingestion.rejected', errorCode: 'invalid_scan' });
@@ -84,6 +91,7 @@ export function createIngestionServer(store: Store, settings: IngestionConfig, a
       if (accounts.authenticate(req.headers.authorization) !== userId) { reply(401, { error: 'session_required' }); return; }
       // Ownership is derived solely from the authenticated session, never request fields.
       const result = store.ingestOwned(userId!, scan.platform, scan.projects);
+      store.recordAccess(userId!, scan.platform, 'ok');
       log('info', 'Owner-scoped browser batch accepted.', { event: 'ingestion.accepted', platform: scan.platform, projectCount: scan.projects.length });
       reply(200, { ...result, acceptedAt: new Date().toISOString() });
     } catch {

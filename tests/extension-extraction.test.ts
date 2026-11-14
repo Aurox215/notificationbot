@@ -6,7 +6,34 @@ import { parseHTML } from 'linkedom';
 import { extractProjects } from '../extension/src/extractor.js';
 import { validateScan } from '../src/ingestion/schema.js';
 import { structureReport } from '../extension/src/structure-report.js';
+import { formatAlert } from '../src/domain/project.js';
 const fixture = (name: string) => parseHTML(readFileSync(join(process.cwd(), 'tests/fixtures/extension', name), 'utf8')).document as unknown as Document;
+
+test('card metadata survives extraction and validation into Telegram without inventing missing client data', () => {
+  for (const [platform, pageUrl, href] of [
+    ['PeoplePerHour', 'https://www.peopleperhour.com/freelance-jobs', '/freelance-jobs/python-901'],
+    ['Guru', 'https://www.guru.com/work/', '/jobs/python/901'],
+  ] as const) {
+    const document = parseHTML(`<html><body><article class="project-card"><h2><a href="${href}">Python API</a></h2>
+      <span class="budget">$500</span><span class="category">Development</span><span class="skill">Python</span>
+      <span class="client-rating-score">4.9 / 5</span><span class="client-review-count">0</span>
+      </article></body></html>`).document as unknown as Document;
+    const result = extractProjects(document, pageUrl);
+    const project = validateScan(result.payload).projects[0]!;
+    assert.equal(project.platform, platform);
+    const alert = formatAlert(project);
+    for (const value of ['Python API', 'Budget: $500', 'Category: Development', 'Skills: Python', 'Client rating: 4.9 / 5', 'Client reviews: 0']) assert.ok(alert.includes(value), value);
+    const payload = structuredClone(result.payload!);
+    payload.projects[0]!.client = { reviewCount: -1 };
+    assert.throws(() => validateScan(payload), /invalid_project/);
+    payload.projects[0]!.client = { reviewCount: 1.5 };
+    assert.throws(() => validateScan(payload), /invalid_project/);
+    payload.projects[0]!.client = { ratingScore: '\u0000secret' };
+    assert.throws(() => validateScan(payload), /invalid_project/);
+    delete payload.projects[0]!.client;
+    assert.equal(validateScan(payload).projects[0]!.client, undefined);
+  }
+});
 
 test('PeoplePerHour fixture extracts visible cards, canonical identities, optional fields and no hidden text', () => {
   const scan = extractProjects(fixture('peopleperhour.html'), 'https://www.peopleperhour.com/freelance-jobs');
