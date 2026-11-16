@@ -72,7 +72,8 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
     const budget = field(card, '.budget,.job-budget,.project-budget,.job-list-item__budget,.job-list-item__price,[data-field="budget"]', 200);
     const description = field(card, '.description,.job-description,.project-description,.job-list-item__description,.job-list-item__excerpt,[itemprop="description"],[data-field="description"]', 5000);
     const category = field(card, '.category,.job-category,[data-field="category"]', 200);
-    const publishedAt = field(card, 'time,.posted,.posted-date,.publication-time,.job-age,.job-list-item__date,.job-list-item__posted', 150);
+    const publicationTime = Array.from(card.querySelectorAll('time[datetime]')).find(visible)?.getAttribute('datetime');
+    const publishedAt = publicationTime || field(card, 'time,.posted,.posted-date,.publication-time,.job-age,.job-list-item__date,.job-list-item__posted', 150);
     const skills = Array.from(card.querySelectorAll('.skill,.skills li,.job-list-item__skills li,[data-field="skill"]')).map(e => text(e, 60)).filter((s): s is string => Boolean(s)).slice(0,30);
     if (budget) project.budget = budget;
     if (description) project.description = description;

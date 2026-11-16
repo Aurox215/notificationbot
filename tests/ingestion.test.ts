@@ -157,7 +157,13 @@ test('projects, snapshots, baselines and notifications are isolated per user and
   try {
     store.setState('source_mode', 'extension');
     for (const id of ['1', '2', '3']) { store.ensureUser(id, id); store.preferences(id, { subscribed: true }); }
-    const ingest = (id: string, ids: number[], title: string) => { const scan = validateScan(batch(ids, title)); return store.ingestOwned(id, scan.platform, scan.projects); };
+    const cutoff = Date.now() - 60000;
+    for (const id of ['1', '2', '3']) store.startAlerts(id, cutoff);
+    const ingest = (id: string, ids: number[], title: string) => {
+      const scan = validateScan(batch(ids, title));
+      return store.ingestOwned(id, scan.platform, scan.projects.map(p => ({ ...p,
+        publishedAt: new Date(cutoff + ((id === '1' ? p.sourceId === '102' : p.sourceId === '101') ? 1000 : -1000)).toISOString() })));
+    };
     assert.equal(ingest('1', [101], 'Alice baseline').baseline, true);
     assert.equal(ingest('2', [102], 'Bob private baseline').baseline, true);
     assert.equal(ingest('1', [101, 102], 'Alice private title').inserted, 1);
@@ -279,7 +285,7 @@ test('Telegram inline button approves without typed confirmation and preserves o
 
 test('HTTP pairing, session authentication and malicious owner fields cannot redirect notifications', async () => {
   const store = new Store(':memory:', []);
-  const accounts = new AccountLinks(store, 'AuroxTestBot');
+  const accounts = new AccountLinks(store, 'AuroxTestBot', () => Date.now() - 60000);
   const server = createIngestionServer(store, { port: 0, publicUrl: 'http://127.0.0.1', botUsername: 'AuroxTestBot' }, accounts);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const port = (server.address() as { port: number }).port;
@@ -312,7 +318,9 @@ test('HTTP pairing, session authentication and malicious owner fields cannot red
     assert.equal((await post('/v1/ingest', { ...batch(), userId: '2', chatId: '2' }, token)).status, 200);
     assert.equal(store.browserProjects('1', true).length, 1);
     assert.equal(store.browserProjects('2', true).length, 0);
-    assert.equal((await post('/v1/ingest', batch([101, 102]), token)).status, 200);
+    const fresh = batch([101, 102]);
+    fresh.projects[1]!.publishedAt = new Date(Date.now() - 1000).toISOString();
+    assert.equal((await post('/v1/ingest', fresh, token)).status, 200);
     const sent: string[] = [];
     await new Monitor(store, [], { send: async (_text, id) => { sent.push(id); } }, 0).tick(new AbortController().signal);
     assert.deepEqual(sent, ['1']);

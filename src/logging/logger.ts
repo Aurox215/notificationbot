@@ -1,5 +1,16 @@
 export interface LogFields {
   event?: string;
+  healthy?: boolean;
+  mode?: 'extension' | 'mock';
+  schedulerRunning?: boolean;
+  schedulerStale?: boolean;
+  lastCycleCompletedAt?: number | null;
+  activeSubscribers?: number;
+  pendingProjects?: number;
+  lastBrowserContactAt?: number | null;
+  platformStatus?: string;
+  noticeType?: 'login_required' | 'recovered';
+  platformAccess?: { platform: string; status: string; count: number }[];
   platform?: 'PeoplePerHour' | 'Guru';
   errorCode?: string;
   consecutiveFailures?: number;

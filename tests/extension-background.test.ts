@@ -2,18 +2,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { checkSession } from '../extension/src/session-check.js';
+import { Store } from '../src/persistence/store.js';
+import { Monitor } from '../src/monitoring/monitor.js';
 
 interface Reply { ok: boolean; status?: string; errorCode?: string; error?: string; stage?: string; count?: number; contentScriptReached?: boolean; ingestionAttempted?: boolean; connectionStatus?: string; connection?: string; lastSuccess?: string }
 const extraction = { status: 'ok', detail: 'Extracted.', diagnostics: { linksChecked: 2, visibleProjectLinks: 1, matchedCards: 1, extractedProjects: 1 },
   payload: { platform: 'PeoplePerHour', pageUrl: 'https://www.peopleperhour.com/freelance-jobs', projects: [{ sourceId: '1', title: 'Python API', url: 'https://www.peopleperhour.com/freelance-jobs/python-1' }] } };
 
-function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus?: number; networkDown?: boolean; authStatus?: number; backendInvalid?: boolean; discarded?: boolean; pending?: boolean; monitoring?: unknown } = {}) {
+function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus?: number; networkDown?: boolean; authStatus?: number; backendInvalid?: boolean; discarded?: boolean; pending?: boolean; monitoring?: unknown; platformAuth?: unknown; onAccess?: (status: 'authenticated' | 'login_required') => void } = {}) {
   const storage: Record<string, unknown> = { accountSession: { token: 'synthetic-test-secret', localId: 'scope1', expiresAt: Date.now() + 1000000 } };
   let listener!: (message: unknown, sender: unknown, reply: (value: Reply) => void) => boolean;
   const pageMessages: unknown[] = [];
   const requests: { path: string; method: string }[] = [];
   let alarmListener!: (alarm: { name: string }) => void;
   let alarmCreated = false;
+  let tabUpdated: ((id: number, change: { status: string }, tab: unknown) => void) | undefined;
+  let requestCompleted: ((details: { tabId: number; url: string }) => void) | undefined;
+  const authRequests: { force?: boolean }[] = [];
   const reloaded: number[] = [];
   const tab = { id: 7, active: false, url: 'https://www.peopleperhour.com/freelance-jobs', discarded: options.discarded ?? false };
   if (options.pending) { delete storage.accountSession; storage.pendingLink = { pairingId: 'synthetic', pollSecret: 'synthetic', expiresAt: Date.now() + 100000 }; }
@@ -25,8 +31,13 @@ function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus
       set: async (data: Record<string, unknown>) => { Object.assign(storage, data); },
       remove: async (keys: string | string[]) => { for (const key of typeof keys === 'string' ? [keys] : keys) delete storage[key]; },
     } },
-    tabs: { query: async () => [tab], get: async () => tab, reload: async (id: number) => { reloaded.push(id); },
+    webRequest: { onCompleted: { addListener: (fn: typeof requestCompleted) => { requestCompleted = fn; } } },
+    tabs: { onUpdated: { addListener: (fn: typeof tabUpdated) => { tabUpdated = fn; } }, query: async () => [tab], get: async () => tab, reload: async (id: number) => { reloaded.push(id); },
       sendMessage: async (_id: number, message: unknown) => {
+        if ((message as { type: string }).type === 'CHECK_AUTH') {
+          authRequests.push(message as { force?: boolean });
+          return { authentication: typeof options.platformAuth === 'function' ? await options.platformAuth() : options.platformAuth ?? { state: 'unknown', reason: 'unverified' } };
+        }
         pageMessages.push(message);
         if (options.missing) throw new Error('Receiving end does not exist. Do not leak synthetic-test-secret');
         return options.extraction ?? extraction;
@@ -36,9 +47,10 @@ function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus
   };
   runInNewContext(readFileSync('extension/dist/background.js', 'utf8'), {
     chrome: fakeChrome, crypto: globalThis.crypto, URL, AbortSignal, setTimeout, clearTimeout,
-    fetch: async (url: string, init: { method: string }) => {
+    fetch: async (url: string, init: { method: string; body?: string }) => {
       const path = new URL(url).pathname; requests.push({ path, method: init.method });
       if (options.networkDown) throw new Error('Do not expose synthetic-test-secret or upstream URL');
+      if (path === '/v1/platform-access' && init.body) options.onAccess?.(JSON.parse(init.body).status);
       if (path === '/v1/session') return Response.json({ connected: true, monitoring: options.monitoring }, { status: options.authStatus ?? 200 });
       if (path === '/v1/pairings/claim') return Response.json({ status: 'connected', sessionToken: 'synthetic-token', expiresAt: Date.now() + 100000 });
       const status = options.ingestStatus ?? 200;
@@ -51,7 +63,10 @@ function worker(options: { missing?: boolean; extraction?: unknown; ingestStatus
     if (!accepted) reject(new Error('Listener refused popup request'));
   });
   const tick = async () => { alarmListener({ name: 'aurox-loaded-listings' }); for (let i = 0; i < 4; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
-  return { send, storage, pageMessages, requests, tick, reloaded };
+  const flush = async () => { for (let i = 0; i < 12; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  return { send, storage, pageMessages, requests, tick, reloaded, authRequests,
+    navigation: async () => { tabUpdated?.(tab.id, { status: 'complete' }, tab); await flush(); },
+    nativeRequest: async (url: string) => { requestCompleted?.({ tabId: tab.id, url }); await flush(); } };
 }
 
 test('paired backend can be healthy while Scan Now fails to reach a stale/missing content script', async () => {
@@ -224,12 +239,64 @@ test('public listing and network failure cannot assert an authenticated platform
   }
 });
 
-test('confirmed rejection records no credentials and queues only the affected platform status', async () => {
-  const w = worker({ extraction: { status: 'login_required', detail: 'HTTP 401', authentication: { state: 'expired/logged_out', reason: 'authentication_rejected' } } });
+test('confirmed API rejection records no credentials and queues only the affected platform status', async () => {
+  const w = worker({ platformAuth: { state: 'expired/logged_out', reason: 'api_rejected' }, extraction: { status: 'login_required', detail: 'HTTP 401' } });
   await w.send('SCAN');
   assert.equal(w.storage['blocked:scope1:PeoplePerHour'], 'login_required');
   assert.deepEqual(JSON.parse(JSON.stringify(w.storage['platform-auth:scope1:PeoplePerHour'])).state, 'expired/logged_out');
   assert.equal(w.requests.filter(r => r.path === '/v1/platform-access').length, 1);
   assert.equal(w.requests.filter(r => r.path === '/v1/ingest').length, 0);
   assert.ok(!JSON.stringify(w.storage['platform-auth:scope1:PeoplePerHour']).includes('synthetic-test-secret'));
+});
+
+test('a verified API recovery clears the logout block and collection resumes', async () => {
+  const w = worker({ platformAuth: { state: 'authenticated', reason: 'api_authenticated' } });
+  w.storage['blocked:scope1:PeoplePerHour'] = 'login_required';
+  const result = await w.send('SCAN');
+  assert.equal(result.status, 'accepted');
+  assert.equal(w.storage['blocked:scope1:PeoplePerHour'], undefined);
+  assert.equal((w.storage['platform-auth:scope1:PeoplePerHour'] as { state: string }).state, 'authenticated');
+  assert.equal(w.requests.filter(r => r.path === '/v1/platform-access').length, 1);
+});
+test('opening a login page without API confirmation does not assert logout', async () => {
+  const w = worker({ extraction: { status: 'login_required', detail: 'Login form' } });
+  await w.send('SCAN');
+  assert.equal(w.storage['blocked:scope1:PeoplePerHour'], undefined);
+  assert.equal(w.requests.filter(r => r.path === '/v1/platform-access').length, 0);
+});
+test('authentication recovery checks continue while project scanning is stopped', async () => {
+  const w = worker({ platformAuth: { state: 'authenticated', reason: 'api_authenticated' } });
+  w.storage.scanEnabled = false;
+  w.storage['blocked:scope1:PeoplePerHour'] = 'login_required';
+  await w.tick();
+  assert.equal(w.storage['blocked:scope1:PeoplePerHour'], undefined);
+  assert.equal(w.requests.filter(r => r.path === '/v1/ingest').length, 0);
+  assert.equal(w.storage.scanEnabled, false);
+});
+
+test('PeoplePerHour real member/guest response shapes traverse the worker and dispatch one Telegram notice per transition', async () => {
+  const store = new Store(':memory:', []); const notices: string[] = [];
+  let signedIn = false;
+  try {
+    store.ensureUser('1', '1'); store.preferences('1', { subscribed: true });
+    const monitor = new Monitor(store, [], { send: async text => { notices.push(text); } }, 0);
+    const w = worker({ platformAuth: () => checkSession('https://www.peopleperhour.com', '', undefined,
+      async () => new Response(JSON.stringify(signedIn ? { member: { id: '123' }, shared: {} } : { shared: { handie: { 'guest.neverLoggedIn': true } } }),
+        { headers: { 'content-type': 'application/vnd.api+json' } })),
+      onAccess: status => store.recordAccess('1', 'PeoplePerHour', status) });
+    await w.send('SCAN'); await monitor.tick(new AbortController().signal);
+    assert.equal(notices.length, 1); assert.match(notices[0]!, /login required/);
+    signedIn = true;
+    await w.navigation(); await monitor.tick(new AbortController().signal);
+    assert.equal(store.accessStatus('1', 'PeoplePerHour'), 'authenticated');
+    assert.equal(notices.length, 2); assert.match(notices[1]!, /signed in again/);
+    signedIn = false;
+    await w.nativeRequest('https://www.peopleperhour.com/v1/user/logout');
+    await monitor.tick(new AbortController().signal);
+    assert.equal(notices.length, 3); assert.match(notices[2]!, /login required/);
+    assert.equal(w.authRequests.at(-1)!.force, true);
+    await w.send('SCAN'); await monitor.tick(new AbortController().signal);
+    assert.equal(notices.length, 3);
+    assert.equal(w.storage['blocked:scope1:PeoplePerHour'], 'login_required');
+  } finally { store.close(); }
 });

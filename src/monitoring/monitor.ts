@@ -32,7 +32,7 @@ export class Monitor {
         const projects = await this.sourceRunner.fetch(source, signal);
         if (projects) for (const project of projects) this.store.saveProject(project);
       }
-      // Re-evaluate stored fixtures for new subscribers or changed preferences.
+      // Re-evaluate stored projects within each subscriber's publication window.
       // Browser projects are selected by owner. Legacy unowned browser rows never dispatch.
       const shared = this.store.getState('source_mode') === 'extension' ? [] : this.store.projects(true, 'monitor');
       for (const initialUser of this.store.users()) {
@@ -42,13 +42,17 @@ export class Monitor {
           if (wait > 0) { try { await delay(wait, undefined, { signal }); } catch { return; } }
           const user = this.store.user(initialUser.id)!;
           if (!user.subscribed || user.paused || !user.platforms.includes(platform) || !this.store.claimLoginNotice(user.id, platform)) continue;
+          const noticeStatus = this.store.accessStatus(user.id, platform);
           this.nextSendAt = Date.now() + this.sendSpacingMs;
           try {
-            await this.messenger.send(`${platform}: login required. Please open ${platform} in your own Chrome browser and sign in normally to resume project monitoring.`, user.chatId);
-            this.store.finishLoginNotice(user.id, platform, 'sent');
+            const recovered = this.store.accessStatus(user.id, platform) === 'authenticated';
+            await this.messenger.send(recovered ? `${platform}: signed in again. Platform monitoring can resume; your scan and alert preferences still apply.` : `${platform}: login required. Please open ${platform} in your own Chrome browser and sign in normally to resume project monitoring.`, user.chatId);
+            this.store.finishLoginNotice(user.id, platform, 'sent', 0, noticeStatus);
+            log('info', 'Platform account notice sent to Telegram.', { event: 'platform.notice_sent', platform, noticeType: recovered ? 'recovered' : 'login_required' });
           } catch (error) {
-            if (error instanceof TelegramError && error.code === 429) this.store.finishLoginNotice(user.id, platform, 'pending', Date.now() + error.retryAfter * 1000);
-            else this.store.finishLoginNotice(user.id, platform, error instanceof TelegramError && error.code >= 400 && error.code < 500 ? 'failed' : 'unknown');
+            log('error', 'Platform account notice failed; delivery state recorded.', { event: 'platform.notice_failed', platform, errorCode: error instanceof TelegramError ? `telegram_${error.code}` : 'delivery_unknown' });
+            if (error instanceof TelegramError && error.code === 429) this.store.finishLoginNotice(user.id, platform, 'pending', Date.now() + error.retryAfter * 1000, noticeStatus);
+            else this.store.finishLoginNotice(user.id, platform, error instanceof TelegramError && error.code >= 400 && error.code < 500 ? 'failed' : 'unknown', 0, noticeStatus);
           }
         }
         const candidates = [...shared.map(p => ({ ...p, owned: false })),
@@ -61,7 +65,7 @@ export class Monitor {
           }
           // Commands may change preferences while a send is waiting.
           const user = this.store.user(initialUser.id)!;
-          if (!user.subscribed || user.paused || !user.platforms.includes(project.platform) || !matchesKeywords(project, user.keywords)) continue;
+          if ((owned && this.store.accessStatus(user.id, project.platform) === 'login_required') || !this.store.eligible(user.id, project, owned) || !user.subscribed || user.paused || !user.platforms.includes(project.platform) || !matchesKeywords(project, user.keywords)) continue;
           const enqueue = owned ? this.store.enqueueOwned.bind(this.store) : this.store.enqueue.bind(this.store);
           const claim = owned ? this.store.claimOwned.bind(this.store) : this.store.claim.bind(this.store);
           const finish = owned ? this.store.finishOwned.bind(this.store) : this.store.finish.bind(this.store);

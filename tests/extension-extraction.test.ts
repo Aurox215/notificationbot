@@ -49,7 +49,7 @@ test('PeoplePerHour fixture extracts visible cards, canonical identities, option
   assert.equal(projects[0]!.title, 'Python automation & API');
   assert.equal(projects[0]!.budget, '£500 fixed');
   assert.equal(projects[0]!.description, 'Build a Python API automation.');
-  assert.equal(projects[0]!.publishedAt, 'Posted 5 minutes ago');
+  assert.equal(projects[0]!.publishedAt, '2026-11-13T00:00:00Z');
   assert.ok(!projects[0]!.url.includes('?'));
   assert.ok(!projects[0]!.url.includes('#'));
   assert.equal(projects[1]!.budget, undefined);

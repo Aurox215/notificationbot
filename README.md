@@ -119,6 +119,8 @@ The manual Telegram test bypasses subscription history. SOURCE_MODE=mock preserv
 
 ## Data and security
 
+Alerts include only projects with a verifiable publication time after Telegram connection approval. Reconnecting resets this cutoff and suppresses older queued projects. Missing or ambiguous publication dates stay silent. Existing accounts establish a fresh cutoff on their first startup after this upgrade. Pause/resume preserves the cutoff. Reload the extension after upgrading to extract machine-readable publication dates.
+
 SQLite persists private browser projects, baselines, preferences, sessions and delivery histories. The same platform project can have independent private snapshots for different users. The authenticated session determines the owner; submitted chat/user IDs cannot redirect an alert.
 
 Old browser data from the administrator-broadcast prototype is retained but excluded from delivery. It is not assigned to users automatically. Existing installations must reconnect through Telegram.
@@ -132,3 +134,13 @@ A PostgreSQL migration should preserve the repository contracts, owner-qualified
 - [Extension user guide](extension/README.md)
 - [Pairing protocol, security, migration and operator cloud setup](docs/account-linking.md)
 - [Platform integration and authorization research](docs/phase-3-live-sources.md)
+
+### Platform session verification
+
+The extension checks PeoplePerHour GET /v2/members/me and Guru?s account-only saved-search API with read-only, uncached same-origin GETs every 30 seconds while a supported tab is loaded. Navigation and completed native login/logout API requests trigger an immediate verification. Guru requests use its existing browser access token in the Authorization header, as its site does. Tokens are not sent to the bot backend or written to extension storage. PeoplePerHour uses its public web-application identifiers by default, with observed resource configuration taking precedence. No account credentials are hardcoded. Its application/vnd.api+json response is authenticated when member.id is present, and logged out when the observed shared-only guest envelope is returned?even with HTTP 200. Missing configuration, invalid application keys, redirects, challenges, HTTP 403/429, malformed responses and network errors remain unknown. For Guru, a successful account request is accepted as authenticated only if a second request without cookies or Authorization is explicitly rejected with an authentication error. Anonymous successes remain unknown. UI and successful project extraction never establish login.
+
+Confirmed API rejection pauses that platform, including queued project dispatch. API-confirmed recovery clears the platform block and queues one Telegram recovery notice; manual Stop scan and /pause remain respected. Session checks continue while collection is stopped. Each confirmed login-to-logout transition bypasses the legacy warning cooldown; repeated unchanged states remain deduplicated. Keep one supported tab open for checks. Live account validation is still required to establish that these account-only endpoints distinguish each site's actual session states; automated tests exercise the observed contracts without using real credentials.
+
+The backend logs a `backend.heartbeat` every 30 seconds, including scheduler health, active subscriber and pending-project counts, last browser contact, and aggregate platform statuses. A healthy heartbeat confirms the backend scheduler, not successful browser scanning. `platform.status_changed`, `platform.notice_sent`, and `platform.notice_failed` expose account-state reporting and Telegram notice delivery.
+
+Database ownership uses an OS lock plus a PID/token marker. On Windows and Linux, a crashed process releases the OS lock automatically and the next startup replaces its stale marker after verifying its PID is gone. A second running instance is refused. Legacy empty locks require a one-time cleanup after confirming no old bot is running.

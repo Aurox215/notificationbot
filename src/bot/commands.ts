@@ -19,7 +19,7 @@ export const help = `Mock freelance alerts — no live platform monitoring.
 /confirm CODE — approve a browser connection after checking its code
 /disconnect — revoke your browser connections
 Matching uses any keyword in title, description, category or skills.
-Subscribing or resuming delivers matching mock fixtures not previously sent.`;
+Only projects published after connecting or subscribing are eligible for alerts.`;
 
 export interface Messenger { send(text: string, chatId: string, keyboard?: InlineKeyboard): Promise<void>; answerCallback?(id: string, text: string): Promise<void> }
 export class CommandHandler {
@@ -60,7 +60,7 @@ export class CommandHandler {
       case 'disconnect': this.accounts?.disconnect(id); reply = 'Your browser sessions have been revoked. Reconnect through the extension to authorize a browser again.'; break;
       case 'start': reply = `Welcome! Your private chat is registered. Use /subscribe to enable ${extensionMode ? 'scanned' : 'mock'} project alerts.\n\n${activeHelp}`; break;
       case 'help': reply = activeHelp; break;
-      case 'subscribe': this.store.preferences(id, { subscribed: true, paused: false }); reply = 'Subscribed to mock project alerts. Use /keywords and /platforms to customize them.'; break;
+      case 'subscribe': if (!this.store.user(id)!.subscribed) this.store.startAlerts(id); this.store.preferences(id, { subscribed: true, paused: false }); reply = 'Subscribed to mock project alerts. Use /keywords and /platforms to customize them.'; break;
       case 'pause': this.store.preferences(id, { paused: true }); reply = 'Alerts paused. Use /resume to continue.'; break;
       case 'resume':
         if (!this.store.user(id)!.subscribed) reply = 'Use /subscribe first to enable alerts.';

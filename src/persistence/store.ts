@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Platform, SourceProject } from '../sources/types.js';
 import { matchesKeywords } from '../filtering/keywords.js';
+import { publishedAfter } from '../domain/publication.js';
 
 export interface User {
   id: string; chatId: string; subscribed: boolean; paused: boolean; keywords: string[]; platforms: Platform[];
@@ -55,28 +56,60 @@ export class Store {
     const columns = this.db.prepare('PRAGMA table_info(projects)').all().map(row => row.name);
     if (!columns.includes('notify')) this.db.exec('ALTER TABLE projects ADD COLUMN notify INTEGER NOT NULL DEFAULT 1');
     if (!columns.includes('origin')) this.db.exec("ALTER TABLE projects ADD COLUMN origin TEXT NOT NULL DEFAULT 'monitor'");
+    // Upgrade existing accounts once; restarts preserve their original cutoff.
+    for (const row of this.db.prepare('SELECT id FROM users').all()) {
+      const id = String(row.id);
+      if (this.getState('alerts_since:' + id) === undefined) this.startAlerts(id);
+    }
   }
   close(): void { this.db.close(); }
-  recordAccess(userId: string, platform: Platform, status: 'ok' | 'login_required' | 'verification_required', now = Date.now()): void {
+  runtimeSummary() {
+    const activeSubscribers = Number(this.db.prepare('SELECT COUNT(*) AS count FROM users WHERE subscribed=1 AND paused=0').get()!.count);
+    const pendingProjects = Number(this.db.prepare("SELECT (SELECT COUNT(*) FROM notifications WHERE state='pending') + (SELECT COUNT(*) FROM browser_notifications WHERE state='pending') AS count").get()!.count);
+    const platformAccess = this.db.prepare('SELECT platform,status,COUNT(*) AS count FROM platform_access GROUP BY platform,status').all()
+      .map(row => ({ platform: String(row.platform), status: String(row.status), count: Number(row.count) }));
+    const contact = Number(this.getState('last_browser_contact') ?? 0);
+    return { activeSubscribers, pendingProjects, platformAccess, lastBrowserContactAt: contact || null };
+  }
+  startAlerts(userId: string, now = Date.now()): void {
+    this.setState('alerts_since:' + userId, String(now));
+    this.db.prepare('UPDATE browser_projects SET notify=0 WHERE user_id=?').run(userId);
+    this.db.prepare('DELETE FROM browser_baselines WHERE user_id=?').run(userId);
+  }
+  eligible(userId: string, project: SourceProject, owned: boolean): boolean {
+    const cutoff = this.getState('alerts_since:' + userId);
+    if (cutoff === undefined) return true;
+    return owned || project.publishedAt !== undefined
+      ? publishedAfter(project.publishedAt, project.detectedAt, Number(cutoff))
+      : project.detectedAt.getTime() > Number(cutoff);
+  }
+  recordAccess(userId: string, platform: Platform, status: 'ok' | 'authenticated' | 'login_required' | 'verification_required', now = Date.now()): void {
     this.db.prepare(`INSERT INTO platform_access(user_id,platform,status,notice_state) VALUES(?,?,?,?)
       ON CONFLICT(user_id,platform) DO UPDATE SET status=excluded.status,
-      notice_state=CASE WHEN excluded.status!='login_required' THEN 'none'
+      notice_state=CASE WHEN excluded.status='authenticated' AND platform_access.status='login_required' THEN 'pending'
+        WHEN excluded.status='authenticated' AND platform_access.status='authenticated' THEN platform_access.notice_state
+        WHEN excluded.status!='login_required' THEN 'none'
         WHEN platform_access.status!='login_required' THEN 'pending' ELSE platform_access.notice_state END,
-      retry_at=CASE WHEN excluded.status='login_required' AND platform_access.status!='login_required'
+      retry_at=CASE WHEN excluded.status='authenticated' AND platform_access.status='login_required' THEN ?
+        WHEN excluded.status='login_required' AND platform_access.status='authenticated' THEN ?
+        WHEN excluded.status='login_required' AND platform_access.status!='login_required'
         THEN MAX(?,CASE WHEN platform_access.last_notice_at>0 THEN platform_access.last_notice_at+1800000 ELSE 0 END) ELSE platform_access.retry_at END`)
-      .run(userId, platform, status, status === 'login_required' ? 'pending' : 'none', now);
+      .run(userId, platform, status, status === 'login_required' ? 'pending' : 'none', now, now, now);
+  }
+  accessStatus(userId: string, platform: Platform): string | undefined {
+    return this.db.prepare('SELECT status FROM platform_access WHERE user_id=? AND platform=?').get(userId, platform)?.status as string | undefined;
   }
   loginNotices(userId: string): Platform[] {
-    return this.db.prepare("SELECT platform FROM platform_access WHERE user_id=? AND status='login_required' AND notice_state='pending' AND retry_at<=?")
+    return this.db.prepare("SELECT platform FROM platform_access WHERE user_id=? AND status IN ('login_required','authenticated') AND notice_state='pending' AND retry_at<=?")
       .all(userId, Date.now()).map(row => row.platform as Platform);
   }
   claimLoginNotice(userId: string, platform: Platform): boolean {
-    return this.db.prepare("UPDATE platform_access SET notice_state='sending' WHERE user_id=? AND platform=? AND status='login_required' AND notice_state='pending' AND retry_at<=?")
+    return this.db.prepare("UPDATE platform_access SET notice_state='sending' WHERE user_id=? AND platform=? AND status IN ('login_required','authenticated') AND notice_state='pending' AND retry_at<=?")
       .run(userId, platform, Date.now()).changes === 1;
   }
-  finishLoginNotice(userId: string, platform: Platform, state: 'sent' | 'unknown' | 'failed' | 'pending', retryAt = 0): void {
-    this.db.prepare("UPDATE platform_access SET notice_state=?,retry_at=?,last_notice_at=CASE WHEN ?='pending' THEN last_notice_at ELSE ? END WHERE user_id=? AND platform=?")
-      .run(state, retryAt, state, Date.now(), userId, platform);
+  finishLoginNotice(userId: string, platform: Platform, state: 'sent' | 'unknown' | 'failed' | 'pending', retryAt = 0, expectedStatus?: string): void {
+    this.db.prepare("UPDATE platform_access SET notice_state=?,retry_at=?,last_notice_at=CASE WHEN ?='pending' THEN last_notice_at ELSE ? END WHERE user_id=? AND platform=? AND (? IS NULL OR status=?)")
+      .run(state, retryAt, state, Date.now(), userId, platform, expectedStatus ?? null, expectedStatus ?? null);
   }
   ensureUser(id: string, chatId: string): User {
     this.db.prepare(`INSERT INTO users(id,chat_id,keywords,platforms) VALUES(?,?,?,?)
@@ -127,7 +160,7 @@ export class Store {
           continue;
         }
         inserted += Number(this.db.prepare(`INSERT OR IGNORE INTO browser_projects(user_id,platform,source_id,payload,notify) VALUES(?,?,?,?,?)`)
-          .run(userId, platform, project.sourceId, JSON.stringify(project), Number(!baseline)).changes);
+          .run(userId, platform, project.sourceId, JSON.stringify(project), Number(this.getState('alerts_since:' + userId) === undefined ? !baseline : this.eligible(userId, project, true))).changes);
       }
       this.db.prepare('INSERT OR IGNORE INTO browser_baselines(user_id,platform) VALUES(?,?)').run(userId, platform);
       this.db.exec('COMMIT');
@@ -139,7 +172,7 @@ export class Store {
       .all(userId, Number(includeBaseline)) as { id: number; payload: string }[]).map(row => {
         const project = JSON.parse(row.payload) as SourceProject;
         return { id: row.id, project: { ...project, detectedAt: new Date(project.detectedAt) } };
-      });
+      }).filter(row => includeBaseline || this.eligible(userId, row.project, true));
   }
   browserSummary(userId: string) {
     const user = this.user(userId);
@@ -177,8 +210,14 @@ export class Store {
       .get(linkHash, userId, now)?.confirmation_code as string | undefined;
   }
   approvePairing(userId: string, code: string, now: number): boolean {
-    return this.db.prepare('UPDATE pairing_requests SET approved=1 WHERE user_id=? AND confirmation_code=? AND expires_at>? AND approved=0 AND claimed=0')
-      .run(userId, code, now).changes === 1;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const approved = this.db.prepare('UPDATE pairing_requests SET approved=1 WHERE user_id=? AND confirmation_code=? AND expires_at>? AND approved=0 AND claimed=0')
+        .run(userId, code, now).changes === 1;
+      if (approved) this.startAlerts(userId, now);
+      this.db.exec('COMMIT');
+      return approved;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   claimPairing(id: string, pollHash: string, sessionId: string, tokenHash: string, sessionExpiresAt: number, now: number): 'pending' | 'invalid' | 'connected' {
     this.db.exec('BEGIN IMMEDIATE');

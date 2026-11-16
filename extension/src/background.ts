@@ -32,6 +32,8 @@ function failedState(state: ScanState, error: unknown): ScanState {
 }
 const ready = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(() => chrome.storage.local.remove('pairing'));
 const busy = new Set<number>();
+const checkingAuth = new Set<string>();
+const pendingAuth = new Map<string, Pick<chrome.tabs.Tab, 'id' | 'url'>>();
 const supportedHost = (value: string) => {
   try { const url = new URL(value); return url.protocol === 'https:' && ['www.peopleperhour.com', 'www.guru.com'].includes(url.hostname); } catch { return false; }
 };
@@ -73,6 +75,41 @@ async function session(): Promise<Session | undefined> {
   await syncAlarm();
   return connected;
 }
+async function verifyTabSession(tab: Pick<chrome.tabs.Tab, 'id' | 'url'>, force = false) {
+  await ready;
+  if (tab.id === undefined || !tab.url || !supportedHost(tab.url)) return;
+  const current = await session(); if (!current) return;
+  const platform = platformHost(tab.url);
+  const authKey = 'platform-auth:' + current.localId + ':' + platform;
+  if (checkingAuth.has(authKey)) { if (force) pendingAuth.set(authKey, tab); return; }
+  checkingAuth.add(authKey);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      chrome.tabs.sendMessage(tab.id, { type: 'CHECK_AUTH', force }),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error()), 12000); })
+    ]);
+    const observation = result?.authentication;
+    const authenticated = observation?.state === 'authenticated' && observation?.reason === 'api_authenticated';
+    const rejected = observation?.state === 'expired/logged_out' && observation?.reason === 'api_rejected';
+    if (!authenticated && !rejected) return;
+    const latest = await session(); if (latest?.localId !== current.localId) return;
+    const previous = (await chrome.storage.local.get(authKey))[authKey] as { state?: string; checkedAt?: string } | undefined;
+    if (previous?.state === observation.state && Date.now() - Date.parse(previous?.checkedAt ?? '') < 30000) return;
+    const status = authenticated ? 'authenticated' : 'login_required';
+    // Await backend acknowledgement; a failed report is retried on the next check.
+    await api('/v1/platform-access', 'POST', { platform, status }, current.token);
+    await chrome.storage.local.set({ [authKey]: { state: observation.state, reason: observation.reason, checkedAt: new Date().toISOString() } });
+    const blockedKey = 'blocked:' + current.localId + ':' + platform;
+    if (authenticated) await chrome.storage.local.remove(blockedKey);
+    else await chrome.storage.local.set({ [blockedKey]: 'login_required' });
+  } catch { /* Network failures do not assert login/logout and never include credentials. */ }
+  finally {
+    if (timer) clearTimeout(timer); checkingAuth.delete(authKey);
+    const pending = pendingAuth.get(authKey); pendingAuth.delete(authKey);
+    if (pending) void verifyTabSession(pending, true);
+  }
+}
 const platformHost = (value: string) => new URL(value).hostname === 'www.guru.com' ? 'Guru' as const : 'PeoplePerHour' as const;
 async function submit(extraction: Extraction, tabId: number, platform?: 'PeoplePerHour' | 'Guru') {
   if (busy.has(tabId)) return { accepted: false, detail: 'Scan already in progress.' };
@@ -89,29 +126,27 @@ async function submit(extraction: Extraction, tabId: number, platform?: 'PeopleP
     if (platform) {
       const authKey = `platform-auth:${current.localId}:${platform}`;
       const prior = (await chrome.storage.local.get(authKey))[authKey] as AuthenticationObservation | undefined;
-      // Never trust a supplied positive state: no positive platform check is verified.
-      const observation = authenticationFromResult(extraction.status);
-      if (observation.state !== 'unknown' || prior?.state !== 'expired/logged_out') {
+      // Project extraction and page navigation never override an API session verdict.
+      const observation = { state: 'unknown', reason: 'unverified' } as const;
+      if (!prior || prior.state === 'unknown') {
         await chrome.storage.local.set({ [authKey]: { ...observation,
-          ...(extraction.status === 'login_required' && ['explicit_logout', 'authentication_rejected'].includes(extraction.authentication?.reason ?? '') ? { reason: extraction.authentication!.reason } : {}),
           checkedAt: new Date().toISOString() } });
       }
       const blockedKey = `blocked:${current.localId}:${platform}`;
       if (extraction.status === 'ok' && (await chrome.storage.local.get(blockedKey))[blockedKey] === 'login_required') {
         state.status = 'login_required';
-        state.detail = 'Account monitoring is paused after confirmed logout. Public or stale cards do not prove sign-in. Sign in normally, then use Stop scan / Continue scan to explicitly retry listing access (authentication may remain unknown).';
+        state.detail = 'Account monitoring is paused after confirmed logout. Public or stale cards do not prove sign-in. Sign in normally. A successful API session check will automatically restore platform monitoring.';
         await chrome.storage.local.set({ [key]: state });
         return { accepted: false, ...state };
       }
     }
-    if (platform && ['login_required', 'verification_required'].includes(extraction.status)) {
+    if (platform && extraction.status === 'verification_required') {
       const blockedKey = `blocked:${current.localId}:${platform}`;
       const priorBlock = (await chrome.storage.local.get(blockedKey))[blockedKey];
       const accessStatus = priorBlock === 'login_required' ? 'login_required' : extraction.status;
       await chrome.storage.local.set({ [blockedKey]: accessStatus });
       try {
         await api('/v1/platform-access', 'POST', { platform, status: accessStatus }, current.token);
-        if (extraction.status === 'login_required') state.detail += ' A login notice has been queued for your Telegram account.';
       } catch { state.detail += ' Status reporting failed; it will retry on the next cycle.'; }
     }
     if (extraction.status !== 'ok' || !extraction.payload) { await chrome.storage.local.set({ [key]: state }); return { accepted: false, ...state }; }
@@ -123,7 +158,7 @@ async function submit(extraction: Extraction, tabId: number, platform?: 'PeopleP
         throw new DiagnosticError('backend_response_invalid', 'ingestion', 'Backend did not return a valid ingestion acknowledgement. No successful scan was recorded.');
       }
       state.lastSuccess = String(result.acceptedAt);
-      state.detail = result.baseline ? 'Your initial baseline was saved silently; existing projects do not send alerts.' :
+      state.detail = result.baseline ? 'Initial scan saved. Only projects verified as published after connecting can send alerts.' :
         result.inserted === 0 ? 'No unseen project IDs in this scan. Existing projects were checked for updated metadata.' :
           `Saved ${result.inserted} unseen project(s). Telegram delivery depends on your subscription and filters.`;
       state.detail += ' ' + monitoringDetail(result.monitoring);
@@ -139,6 +174,7 @@ async function submit(extraction: Extraction, tabId: number, platform?: 'PeopleP
 }
 async function scanTab(tab: Pick<chrome.tabs.Tab, 'id' | 'url'>, poll = false) {
     if (tab?.id === undefined || !tab.url || !supportedHost(tab.url)) throw new DiagnosticError('unsupported_page', 'content_script', 'Open a supported website in the active tab.');
+    await verifyTabSession(tab);
     const current = await session();
     const key = scanKey(current, tab.id);
     const previous = (await chrome.storage.local.get(key))[key] as ScanState | undefined;
@@ -167,7 +203,7 @@ async function syncAlarm() {
   if (!chrome.alarms) return;
   await ready;
   const data = await chrome.storage.local.get(['scanEnabled', 'accountSession', 'pendingLink']);
-  if (data.pendingLink || (data.accountSession && data.scanEnabled !== false)) {
+  if (data.pendingLink || data.accountSession) {
     if (!await chrome.alarms.get(scanAlarm)) {
       await chrome.alarms.create(scanAlarm, { periodInMinutes: 0.5 });
     }
@@ -179,11 +215,13 @@ async function scanLoadedTabs(pollDue = false) {
   try {
     await ready;
     const current = await session(); // Completes approved pairing even when the popup is closed.
-    if (!current || (await chrome.storage.local.get('scanEnabled')).scanEnabled === false) { await syncAlarm(); return; }
+    if (!current) { await syncAlarm(); return; }
     for (const tab of await chrome.tabs.query({ url: ['https://www.peopleperhour.com/*', 'https://www.guru.com/*'] })) {
-      if ((await chrome.storage.local.get('scanEnabled')).scanEnabled === false) break;
+
       if (tab.discarded || tab.status === 'loading' || !tab.url || !supportedHost(tab.url)) continue;
       try {
+        await verifyTabSession(tab);
+        if ((await chrome.storage.local.get('scanEnabled')).scanEnabled === false) continue;
         const platform = platformHost(tab.url);
         const blockedKey = `blocked:${current.localId}:${platform}`;
         const blocked = (await chrome.storage.local.get(blockedKey))[blockedKey];
@@ -199,6 +237,17 @@ async function scanLoadedTabs(pollDue = false) {
   } catch { /* Existing diagnostic paths report authentication/network errors without secrets. */ }
   finally { sweeping = false; }
 }
+// Navigation and completed login/logout calls invalidate the 30-second probe
+// cache. They trigger verification; neither URL nor HTTP 200 determines state.
+chrome.tabs.onUpdated?.addListener((_id, change, tab) => {
+  if (change.status === 'complete' && tab.url && supportedHost(tab.url)) void verifyTabSession(tab, true);
+});
+chrome.webRequest?.onCompleted.addListener(details => {
+  if (details.tabId < 0) return;
+  let url: URL; try { url = new URL(details.url); } catch { return; }
+  if (!supportedHost(url.href) || !/\/(?:login|logout|signin|signout)(?:\.aspx)?\/?$/i.test(url.pathname)) return;
+  void chrome.tabs.get(details.tabId).then(tab => verifyTabSession(tab, true)).catch(() => {});
+}, { urls: ['https://www.peopleperhour.com/*', 'https://www.guru.com/*'], types: ['xmlhttprequest'] });
 chrome.alarms?.onAlarm.addListener(alarm => { if (alarm.name === scanAlarm) void scanLoadedTabs(true); });
 void syncAlarm().catch(() => {});
 
@@ -216,12 +265,8 @@ async function handle(message: { type?: string; extraction?: Extraction }, sende
     await chrome.storage.local.set({ scanEnabled: enabled });
     if (enabled) {
       const stored = await chrome.storage.local.get(null);
-      await chrome.storage.local.remove(Object.keys(stored).filter(key => key.startsWith('blocked:') || key.startsWith('poll:')));
-      // Explicit user retry permits listing access again, but is not proof of login.
-      const current = data.accountSession as Session;
-      for (const platform of ['PeoplePerHour', 'Guru']) await chrome.storage.local.set({
-        [`platform-auth:${current.localId}:${platform}`]: { state: 'unknown', reason: 'unverified', checkedAt: new Date().toISOString() },
-      });
+      await chrome.storage.local.remove(Object.keys(stored).filter(key => key.startsWith('poll:')));
+      // Continue scan never clears a confirmed logout; only a server check can.
     }
     for (const tab of await chrome.tabs.query({ url: ['https://www.peopleperhour.com/*', 'https://www.guru.com/*'] })) {
       if (tab.id !== undefined) void chrome.tabs.sendMessage(tab.id, { type: 'SCAN_STATE_CHANGED', enabled }).catch(() => {});
@@ -241,6 +286,7 @@ async function handle(message: { type?: string; extraction?: Extraction }, sende
     if (sender.frameId !== 0 || sender.tab?.id === undefined || !sender.url || !supportedHost(sender.url) ||
       message.extraction?.payload && listingPlatform(message.extraction.payload.pageUrl) !== listingPlatform(sender.url)) throw new Error('Invalid page sender.');
     if (!message.extraction) throw new Error('Missing extraction.');
+    await verifyTabSession(sender.tab);
     return submit(message.extraction, sender.tab.id, platformHost(sender.url));
   }
   if (message.type === 'CONNECT') {

@@ -77,9 +77,14 @@ export function createIngestionServer(store: Store, settings: IngestionConfig, a
       }
       if (req.url === '/v1/platform-access') {
         const input = data as { platform?: unknown; status?: unknown } | null;
-        if (!input || typeof input.platform !== 'string' || typeof input.status !== 'string' || !['PeoplePerHour', 'Guru'].includes(input.platform) || !['ok', 'login_required', 'verification_required'].includes(input.status)) { reply(400, { error: 'invalid_platform_status' }); return; }
+        if (!input || typeof input.platform !== 'string' || typeof input.status !== 'string' || !['PeoplePerHour', 'Guru'].includes(input.platform) || !['ok', 'authenticated', 'login_required', 'verification_required'].includes(input.status)) { reply(400, { error: 'invalid_platform_status' }); return; }
         if (accounts.authenticate(req.headers.authorization) !== userId) { reply(401, { error: 'session_required' }); return; }
-        store.recordAccess(userId!, input.platform as 'PeoplePerHour' | 'Guru', input.status as 'ok' | 'login_required' | 'verification_required');
+        const previousStatus = store.accessStatus(userId!, input.platform as 'PeoplePerHour' | 'Guru');
+        store.recordAccess(userId!, input.platform as 'PeoplePerHour' | 'Guru', input.status as 'ok' | 'authenticated' | 'login_required' | 'verification_required');
+        store.setState('last_browser_contact', String(Date.now()));
+        if (previousStatus !== input.status) log('info', 'Browser platform status changed.', {
+          event: 'platform.status_changed', platform: input.platform as 'PeoplePerHour' | 'Guru', platformStatus: input.status,
+        });
         reply(200, { ok: true }); return;
       }
       let scan: ReturnType<typeof validateScan>;
@@ -91,7 +96,8 @@ export function createIngestionServer(store: Store, settings: IngestionConfig, a
       if (accounts.authenticate(req.headers.authorization) !== userId) { reply(401, { error: 'session_required' }); return; }
       // Ownership is derived solely from the authenticated session, never request fields.
       const result = store.ingestOwned(userId!, scan.platform, scan.projects);
-      store.recordAccess(userId!, scan.platform, 'ok');
+      store.setState('last_browser_contact', String(Date.now()));
+      // Successful project extraction is not proof of an authenticated platform session.
       const monitoring = store.browserSummary(userId!);
       log('info', 'Owner-scoped browser batch accepted.', { event: 'ingestion.accepted', platform: scan.platform,
         projectCount: scan.projects.length, inserted: result.inserted, baseline: result.baseline,
