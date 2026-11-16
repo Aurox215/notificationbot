@@ -1,6 +1,6 @@
 import { extractProjects, visible } from './extractor.js';
 import { projectIdentity } from './project-cards.js';
-import { listingPlatform } from '../../src/ingestion/identity.js';
+import { listingPlatform } from '../shared/identity.js';
 
 // Only layout vocabulary may leave the page. Arbitrary classes can contain account
 // identifiers, so unknown tokens (including hashes and IDs) are never reported.

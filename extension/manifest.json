@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Aurox Job Monitor",
-  "version": "0.7.6",
+  "version": "0.8.2",
   "minimum_chrome_version": "120",
-  "description": "Private standalone PeoplePerHour and Guru alerts through Aurox_notification_bot. No backend required.",
+  "description": "Standalone PeoplePerHour and Guru alerts through Aurox_notification_bot.",
   "permissions": [
     "storage",
     "activeTab",

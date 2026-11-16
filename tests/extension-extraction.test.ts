@@ -4,9 +4,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseHTML } from 'linkedom';
 import { extractProjects } from '../extension/src/extractor.js';
-import { validateScan } from '../src/ingestion/schema.js';
+import { validateScan } from '../extension/shared/schema.js';
 import { structureReport } from '../extension/src/structure-report.js';
-import { formatAlert } from '../src/domain/project.js';
+import { formatAlert } from '../extension/shared/project.js';
 const fixture = (name: string) => parseHTML(readFileSync(join(process.cwd(), 'tests/fixtures/extension', name), 'utf8')).document as unknown as Document;
 
 test('card metadata survives extraction and validation into Telegram without inventing missing client data', () => {

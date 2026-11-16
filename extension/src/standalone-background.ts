@@ -1,8 +1,8 @@
 import { localStore } from './standalone-api.js';
 import { diagnostic, DiagnosticError } from './diagnostics.js';
 import { listingUrlPage } from './listing-evidence.js';
-import { listingPlatform } from '../../src/ingestion/identity.js';
-import type { Platform } from '../../src/sources/types.js';
+import { listingPlatform } from '../shared/identity.js';
+import type { Platform } from '../shared/types.js';
 import type { Extraction } from './extractor.js';
 const sites = ['https://www.peopleperhour.com/*', 'https://www.guru.com/*'];
 const alarmName = 'aurox-standalone-monitor';
@@ -32,6 +32,7 @@ async function verify(tab: Pick<chrome.tabs.Tab, 'id' | 'url'>, force = false) {
   try {
     const result = await pageMessage(tab.id, { type: 'CHECK_AUTH', force });
     const auth = result?.authentication;
+    await localStore().recordAuthenticationIssue(platform(tab.url), !auth || auth.state === 'unknown' ? auth?.detail ?? platform(tab.url) + ': account status could not be verified. Refresh this platform tab.' : '');
     if (auth?.state === 'authenticated' && auth.reason === 'api_authenticated') {
       const site = platform(tab.url);
       await localStore().recordAccess(site, 'authenticated');
@@ -40,7 +41,7 @@ async function verify(tab: Pick<chrome.tabs.Tab, 'id' | 'url'>, force = false) {
       await localStore().recordListingPresence(site, available);
     }
     if (auth?.state === 'expired/logged_out' && auth.reason === 'api_rejected') await localStore().recordAccess(platform(tab.url), 'login_required');
-  } catch { /* Failed checks do not establish account state. */ }
+  } catch (error) { await localStore().recordAuthenticationIssue(platform(tab.url), platform(tab.url) + ': ' + diagnostic(error).message); }
   finally {
     checking.delete(tab.id);
     const pending = authPending.get(tab.id); authPending.delete(tab.id);
@@ -129,7 +130,7 @@ async function handle(message: Message, sender: chrome.runtime.MessageSender) {
     return result;
   }
   if (message.type === 'DISCONNECT') { const result = await store.disconnect(); await syncAlarm(); return result; }
-  if (message.type === 'CHECK_CONNECTION') { const before = await store.status(); const result = await store.checkConnection(); await syncAlarm(); if (!before.connected && result.connected) await resumeMonitoring(); return result; }
+  if (message.type === 'CHECK_CONNECTION') { const before = await store.status(); const result = await store.checkConnection(); await syncAlarm(); if (!before.connected && result.connected) await resumeMonitoring(); if (result.connected) await Promise.all((await chrome.tabs.query({ url: sites })).filter(tab => !tab.discarded && tab.status !== 'loading').map(tab => verify(tab, true))); return store.status(); }
   if (message.type === 'TOGGLE_SCAN') {
     const current = await store.status(); const next = await store.setScanning(!current.scanningEnabled);
     for (const tab of await chrome.tabs.query({ url: sites })) if (tab.id !== undefined) void chrome.tabs.sendMessage(tab.id, { type: 'SCAN_STATE_CHANGED', enabled: next.connected && next.scanningEnabled }).catch(() => {});
@@ -149,7 +150,8 @@ chrome.runtime.onMessage.addListener((message: Message, sender, reply) => {
 chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === alarmName) void sweep().catch(() => {}); });
 chrome.runtime.onStartup?.addListener(() => { void sweep().catch(() => {}); });
 chrome.runtime.onInstalled?.addListener(() => { void syncAlarm().catch(() => {}); });
-chrome.tabs.onUpdated?.addListener((_id, change, tab) => { if (change.status === 'complete' && tab.url && supported(tab.url)) void verify(tab, true); });
+chrome.tabs.onUpdated?.addListener((_id, change, tab) => { if ((change.status === 'complete' || change.url) && tab.url && supported(tab.url)) void verify(tab, true); });
+chrome.tabs.onRemoved?.addListener(() => { void chrome.tabs.query({ url: sites }).then(tabs => Promise.all(tabs.filter(tab => !tab.discarded && tab.status !== 'loading').map(tab => verify(tab, true)))).catch(() => {}); });
 chrome.webRequest?.onCompleted.addListener(details => {
   if (details.tabId < 0) return;
   let url: URL; try { url = new URL(details.url); } catch { return; }

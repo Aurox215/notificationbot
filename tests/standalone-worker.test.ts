@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
 
-function profile(chatId: number, workerSource?: string, permissionGranted = true, page: { url?: string; authenticated?: boolean; listingOpen?: boolean; scanResponse?: Record<string, unknown>; scanMessages?: string[]; details?: Record<string, unknown> | false } = {}) {
+function profile(chatId: number, workerSource?: string, permissionGranted = true, page: { url?: string; authenticated?: boolean; loggedOut?: boolean; listingOpen?: boolean; scanResponse?: Record<string, unknown>; scanMessages?: string[]; details?: Record<string, unknown> | false } = {}) {
   const storage: Record<string, any> = {};
   const sent: { chat_id: string; text: string }[] = [];
   const methods: string[] = []; const detailRequests: string[] = [];
@@ -16,6 +16,7 @@ function profile(chatId: number, workerSource?: string, permissionGranted = true
   class Clock extends Date { static override now() { return time; } }
   function boot() {
     let listener!: (message: unknown, sender: unknown, reply: (result: Record<string, any>) => void) => boolean | undefined;
+    let updated: ((id: number, change: { url?: string }, tab: { id: number; url: string; status: string }) => void) | undefined;
     let startup: (() => void) | undefined; let alarm = false;
     const tab = { id: 7, url: page.url ?? 'https://www.peopleperhour.com/freelance-jobs', status: 'complete' };
     const chrome = {
@@ -25,13 +26,13 @@ function profile(chatId: number, workerSource?: string, permissionGranted = true
         set: async (values: Record<string, unknown>) => { Object.assign(storage, structuredClone(values)); },
         remove: async (keys: string | string[]) => { for (const key of typeof keys === 'string' ? [keys] : keys) delete storage[key]; } } },
       alarms: { get: async () => alarm ? {} : undefined, create: async () => { alarm = true; }, clear: async () => { alarm = false; }, onAlarm: { addListener: () => {} } },
-      tabs: { create: async (tab: { url: string }) => { assert.equal(tab.url, 'https://t.me/Aurox_notification_bot?start=extension'); }, query: async () => [tab, ...(page.listingOpen ? [{ id: 8, url: 'https://www.peopleperhour.com/freelance-jobs', status: 'complete' }] : [])], get: async () => tab, onUpdated: { addListener: () => {} }, sendMessage: async (_id: number, message: { type: string; url?: string }) => message.type === 'PROJECT_DETAIL' ? (() => { detailRequests.push(message.url ?? ''); return page.details === false ? { ok: false } : { ok: true, details: page.details ?? {} }; })() : message.type === 'CHECK_AUTH' ? { authentication: page.authenticated ? { state: 'authenticated', reason: 'api_authenticated' } : { state: 'unknown', reason: 'unverified' } } : (() => { if (['SCAN_PAGE', 'POLL_PAGE'].includes(message.type)) page.scanMessages?.push(message.type); return page.scanResponse ?? { status: 'no_projects', detail: 'No project cards.' }; })() },
+      tabs: { create: async (tab: { url: string }) => { assert.equal(tab.url, 'https://t.me/Aurox_notification_bot?start=extension'); }, query: async () => [tab, ...(page.listingOpen ? [{ id: 8, url: 'https://www.peopleperhour.com/freelance-jobs', status: 'complete' }] : [])], get: async () => tab, onUpdated: { addListener: (fn: typeof updated) => { updated = fn; } }, sendMessage: async (_id: number, message: { type: string; url?: string }) => message.type === 'PROJECT_DETAIL' ? (() => { detailRequests.push(message.url ?? ''); return page.details === false ? { ok: false } : { ok: true, details: page.details ?? {} }; })() : message.type === 'CHECK_AUTH' ? { authentication: page.loggedOut ? { state: 'expired/logged_out', reason: 'api_rejected' } : page.authenticated ? { state: 'authenticated', reason: 'api_authenticated' } : { state: 'unknown', reason: 'unverified' } } : (() => { if (['SCAN_PAGE', 'POLL_PAGE'].includes(message.type)) page.scanMessages?.push(message.type); return page.scanResponse ?? { status: 'no_projects', detail: 'No project cards.' }; })() },
       webRequest: { onCompleted: { addListener: () => {} } },
       runtime: { id: 'self', getURL: (path: string) => 'chrome-extension://self/' + path, onMessage: { addListener: (fn: typeof listener) => { listener = fn; } }, onStartup: { addListener: (fn: () => void) => { startup = fn; } }, onInstalled: { addListener: () => {} } },
     };
     runInNewContext(workerSource ?? readFileSync('extension/dist/standalone-background.js', 'utf8'), {
       navigator: { locks: { request: (_name: string, operation: () => Promise<unknown>) => { const next = lock.catch(() => {}).then(operation); lock = next; return next; } } },
-      chrome, Date: Clock, crypto: globalThis.crypto, URL, AbortSignal, setTimeout, clearTimeout,
+      chrome, Date: Clock, crypto: globalThis.crypto, URL, AbortSignal, setTimeout: (callback: (...args: any[]) => void, delay = 0, ...args: any[]) => { if (delay > 0 && delay <= 1500) { time += delay; queueMicrotask(() => callback(...args)); return 0; } return setTimeout(callback, delay, ...args); }, clearTimeout,
       fetch: async function (this: { chrome?: unknown }, input: string, init: { body: string }) {
         assert.ok(this?.chrome, 'Browser fetch must use the service worker global receiver, not the Telegram client instance.');
         const url = new URL(input); assert.equal(url.origin, 'https://api.telegram.org', 'No backend or website fetch is allowed from the standalone worker.');
@@ -45,6 +46,7 @@ function profile(chatId: number, workerSource?: string, permissionGranted = true
     });
     assert.ok(startup);
     return {
+      navigate: async (url: string) => { tab.url = url; updated?.(tab.id, { url }, tab); for (let turn = 0; turn < 30; turn++) await new Promise<void>(resolve => setImmediate(resolve)); },
       startup: async () => { startup!(); for (let turn = 0; turn < 30; turn++) await new Promise<void>(resolve => setImmediate(resolve)); },
       send: (type: string, values: Record<string, unknown> = {}) => new Promise<Record<string, any>>(resolve => {
         assert.equal(listener({ type, ...values }, { id: 'self', url: 'chrome-extension://self/standalone.html' }, resolve), true);
@@ -183,17 +185,27 @@ test('a parsed real-style listing with a new sibling-footer project reaches Tele
     const broken = structuredClone(page.scanResponse) as { payload: { projects: { publishedAt?: string }[] } };
     for (const project of broken.payload.projects) delete project.publishedAt;
     await worker.content('AUTO_SCAN', { extraction: broken }); const status = await worker.send('GET_STATUS'); assert.match(status.monitoringIssue, /posting times could not be read/);
-    await worker.content('AUTO_SCAN', { extraction: page.scanResponse }); assert.equal((await worker.send('GET_STATUS')).monitoringIssue, '');
+    await worker.content('AUTO_SCAN', { extraction: page.scanResponse }); assert.equal(p.storage.standaloneData.monitoringIssues?.[site], undefined);
   }
 });
 
-test('compiled worker includes detail values before notifying and paces lookups across restarts', async () => {
+test('compiled worker sends bursts promptly with detail values and caches lookups across restarts', async () => {
   const page = { details: { budget: 'Under $250', category: 'Design & Art', skills: ['Video Editing'], description: 'Create a three-minute highlight reel for scouts.', client: { ratingScore: '100%', reviewCount: 10, joinedAt: 'January 2024' } } };
   const p = profile(7, undefined, true, page); let worker = p.boot(); await worker.send('CONNECT', { chatId: '7', botToken: p.botToken });
   await worker.content('AUTO_SCAN', { extraction: scan(1, p.now - 60000) }); assert.equal(p.detailRequests.length, 0);
   p.advance(10 * 60000); await worker.content('AUTO_SCAN', { extraction: scan(2, p.now - 60000) });
   assert.equal(p.detailRequests.length, 1); assert.equal(p.sent.length, 2);
-  for (const value of ['Budget: Under $250', 'Category: Design & Art', 'Skills: Video Editing', 'highlight reel for scouts', 'Client rating: 100%', 'Client reviews: 10', 'Client joined: January 2024']) assert.ok(p.sent[1]!.text.includes(value), value);
-  p.advance(); await worker.content('AUTO_SCAN', { extraction: scan(3, p.now - 1000) }); assert.equal(p.detailRequests.length, 1); assert.equal(p.sent.length, 2);
+  for (const value of ['Budget: Under $250', 'Category: Design & Art', 'Skills: Video Editing', 'Client rating: 100%', 'Client reviews: 10', 'Client joined: January 2024']) assert.ok(p.sent[1]!.text.includes(value), value);
+  p.advance(); await worker.content('AUTO_SCAN', { extraction: scan(3, p.now - 1000) }); assert.equal(p.detailRequests.length, 2); assert.equal(p.sent.length, 3);
   worker = p.boot(); p.advance(31000); await worker.startup(); assert.equal(p.detailRequests.length, 2); assert.equal(p.sent.length, 3);
+});
+
+test('Guru URL-only navigation sends a jobs-page reminder and API-confirmed logout sends its private notice after refresh', async () => {
+  const page = { url: 'https://www.guru.com/work/', authenticated: true, loggedOut: false };
+  const p = profile(7, undefined, true, page); const worker = p.boot(); await worker.send('CONNECT', { chatId: '7', botToken: p.botToken }); p.advance();
+  await worker.navigate('https://www.guru.com/pro/'); assert.equal(p.sent.length, 3); assert.match(p.sent[1]!.text, /Guru: signed in/); assert.match(p.sent[2]!.text, /https:\/\/www.guru.com\/work\//);
+  p.advance(); await worker.navigate('https://www.guru.com/pro/'); assert.equal(p.sent.length, 3);
+  await worker.navigate('https://www.guru.com/work/'); p.advance(); await worker.navigate('https://www.guru.com/pro/'); assert.equal(p.sent.length, 4);
+  p.advance(); page.loggedOut = true; await worker.navigate('https://www.guru.com/login.aspx'); assert.equal(p.sent.length, 5); assert.match(p.sent[4]!.text, /Guru: login required/);
+  p.advance(); await worker.navigate('https://www.guru.com/login.aspx'); assert.equal(p.sent.length, 5); assert.ok(p.sent.every(message => message.chat_id === '7'));
 });

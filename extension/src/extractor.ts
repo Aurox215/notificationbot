@@ -1,6 +1,6 @@
 import { listingEvidence } from './listing-evidence.js';
-import { listingPlatform, canonicalProject } from '../../src/ingestion/identity.js';
-import type { ScanPayload, ExtractedProject } from '../../src/ingestion/schema.js';
+import { listingPlatform, canonicalProject } from '../shared/identity.js';
+import type { ScanPayload, ExtractedProject } from '../shared/schema.js';
 import { findProjectCard, isTitleLink } from './project-cards.js';
 import type { AuthenticationObservation } from './authentication.js';
 

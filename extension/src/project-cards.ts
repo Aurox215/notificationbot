@@ -1,5 +1,5 @@
-import { canonicalProject } from '../../src/ingestion/identity.js';
-import type { Platform } from '../../src/sources/types.js';
+import { canonicalProject } from '../shared/identity.js';
+import type { Platform } from '../shared/types.js';
 
 export const titleSelector = 'h2 a,h3 a,h4 a,h5 a,h6 a,[role="heading"] a,.project-title a,.job-title a,.job-list-item__title a,a[data-project-title],a.job-list-item__title';
 export function titleHeading(anchor: Element): Element | null {

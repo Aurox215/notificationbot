@@ -58,10 +58,11 @@ export function savedSearchConfiguration(origin: string, urls: string[]): string
 }
 // Runs only in the isolated content script. Platform tokens never cross runtime messages.
 export async function checkSession(origin: string, cookie: string, configuration?: string,
-  request: typeof fetch = fetch): Promise<AuthenticationObservation> {
+  request: typeof fetch = fetch, refreshCheck?: { readCookie(): string; wait(): Promise<void>; confirmed?: boolean; verifyBrowserSession?: boolean; deadline?: number }): Promise<AuthenticationObservation> {
   let url: string;
   const refreshPending = origin === 'https://www.guru.com' && cookie.split(';').some(p => /^_refreshToken=.+/.test(p.trim()));
-  const signal = AbortSignal.timeout(10000);
+  const deadline = refreshCheck?.deadline ?? Date.now() + 10000;
+  const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (origin === 'https://www.guru.com') {
     url = origin + '/api/v1/search/savedsearches/get/';
@@ -97,7 +98,15 @@ export async function checkSession(origin: string, cookie: string, configuration
     const observation = sessionResult(response.status, response.headers.get('content-type') ?? '', body);
     // A rejected access token alone cannot disprove a browser session that may
     // still refresh. Let Guru's own page refresh it; never submit refresh tokens.
-    if (observation.state === 'expired/logged_out' && refreshPending) return unknown();
+    if (observation.state === 'expired/logged_out' && refreshPending && !refreshCheck?.confirmed) {
+      if (!refreshCheck) return unknown();
+      await refreshCheck.wait();
+      const latest = refreshCheck.readCookie();
+      const sessionCookies = (value: string) => value.split(';').map(part => part.trim()).filter(part => /^_(?:access|refresh)Token=/.test(part)).sort().join(';');
+      // A changed token means Guru is still renewing the session; do not declare logout.
+      if (sessionCookies(latest) !== sessionCookies(cookie)) return unknown();
+      return checkSession(origin, latest, configuration, request, { ...refreshCheck, confirmed: true, deadline });
+    }
     if (observation.state !== 'authenticated') return observation;
     // Prove this API is account-only. An anonymous success (even an empty list)
     // must never be mistaken for evidence of a signed-in session.
@@ -117,7 +126,17 @@ export async function checkSession(origin: string, cookie: string, configuration
     const controlText = new TextDecoder().decode(controlBytes);
     let controlBody: unknown = controlText;
     try { controlBody = JSON.parse(controlText); } catch { /* XML authorization errors are supported. */ }
-    return sessionResult(control.status, control.headers.get('content-type') ?? '', controlBody).state === 'expired/logged_out'
-      ? observation : unknown();
+    const accountOnly = sessionResult(control.status, control.headers.get('content-type') ?? '', controlBody).state === 'expired/logged_out';
+    if (!accountOnly) return unknown();
+    if (refreshCheck?.verifyBrowserSession) {
+      // A surviving bearer token may still work after the browser's actual session has logged out.
+      // Confirm the browser session with the observed protected dashboard route, not a UI label.
+      const dashboard = await request(origin + '/pro/', { method: 'GET', credentials: 'same-origin', cache: 'no-store', redirect: 'follow', signal });
+      let loginRedirect = false;
+      try { const target = new URL(dashboard.url); loginRedirect = dashboard.ok && dashboard.redirected && target.origin === origin && /^\/login\.aspx\/?$/i.test(target.pathname); } catch { /* Missing/unrelated redirect targets cannot prove logout. */ }
+      await dashboard.body?.cancel();
+      if (loginRedirect) return { state: 'expired/logged_out', reason: 'api_rejected' };
+    }
+    return observation;
   } catch { return unknown(); }
 }

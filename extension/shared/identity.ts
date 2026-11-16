@@ -1,4 +1,4 @@
-import type { Platform } from '../sources/types.js';
+import type { Platform } from './types.js';
 
 export function listingPlatform(value: string): Platform | undefined {
   try {

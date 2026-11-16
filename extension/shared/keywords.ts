@@ -1,4 +1,4 @@
-import type { ProjectAlert } from '../domain/project.js';
+import type { ProjectAlert } from './project.js';
 
 export function matchesKeywords(project: ProjectAlert, keywords: string[]): boolean {
   if (!keywords.length) return true;

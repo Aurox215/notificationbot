@@ -1,8 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkSession, sessionResult, savedSearchConfiguration, peoplePerHourSessionResult } from '../extension/src/session-check.js';
-import { Store } from '../src/persistence/store.js';
-import { Monitor } from '../src/monitoring/monitor.js';
 
 const guru = 'https://www.guru.com';
 const pph = 'https://www.peopleperhour.com';
@@ -52,46 +50,6 @@ test('PeoplePerHour current-member probe works without resource discovery and st
   assert.equal((await checkSession(pph, '', config, request)).state, 'authenticated'); assert.equal(calls, 2);
   assert.equal((await checkSession('https://evil.example', 'token', config, request)).state, 'unknown'); assert.equal(calls, 2);
 });
-test('API logout and recovery send one notice each; repeated checks and public scans do not resume a logged-out account', async () => {
-  const store = new Store(':memory:', []); const sent: string[] = [];
-  try {
-    store.ensureUser('1', '1'); store.preferences('1', { subscribed: true });
-    const monitor = new Monitor(store, [], { send: async text => { sent.push(text); } }, 0);
-    store.recordAccess('1', 'Guru', 'authenticated'); await monitor.tick(new AbortController().signal);
-    assert.equal(sent.length, 0);
-    store.recordAccess('1', 'Guru', 'login_required');
-    await monitor.tick(new AbortController().signal); await monitor.tick(new AbortController().signal);
-    assert.equal(sent.length, 1); assert.match(sent[0]!, /login required/);
-    store.recordAccess('1', 'Guru', 'login_required'); await monitor.tick(new AbortController().signal);
-    assert.equal(sent.length, 1);
-    store.recordAccess('1', 'Guru', 'authenticated'); await monitor.tick(new AbortController().signal);
-    store.recordAccess('1', 'Guru', 'authenticated'); await monitor.tick(new AbortController().signal);
-    assert.equal(sent.length, 2); assert.match(sent[1]!, /signed in again/);
-    assert.equal(store.accessStatus('1', 'PeoplePerHour'), undefined);
-    store.recordAccess('1', 'Guru', 'login_required');
-    store.recordAccess('1', 'Guru', 'authenticated');
-    store.finishLoginNotice('1', 'Guru', 'sent', 0, 'login_required');
-    assert.deepEqual(store.loginNotices('1'), ['Guru']);
-  } finally { store.close(); }
-});
-
-test('queued browser alerts stay blocked after logout until API recovery', async () => {
-  const store = new Store(':memory:', []); const sent: string[] = [];
-  try {
-    store.ensureUser('1', '1'); store.preferences('1', { subscribed: true });
-    const project = (sourceId: string) => ({ sourceId, platform: 'Guru' as const, title: 'Project ' + sourceId, detectedAt: new Date() });
-    store.ingestOwned('1', 'Guru', [project('baseline')]);
-    store.ingestOwned('1', 'Guru', [project('later')]);
-    store.recordAccess('1', 'Guru', 'login_required');
-    const monitor = new Monitor(store, [], { send: async text => { sent.push(text); } }, 0);
-    await monitor.tick(new AbortController().signal);
-    assert.equal(sent.length, 1); assert.match(sent[0]!, /login required/);
-    store.recordAccess('1', 'Guru', 'authenticated');
-    await monitor.tick(new AbortController().signal);
-    assert.equal(sent.length, 3); assert.match(sent[1]!, /signed in again/); assert.match(sent[2]!, /Project later/);
-  } finally { store.close(); }
-});
-
 test('anonymous API success cannot falsely establish login', async () => {
   for (const response of [[], { data: [] }]) {
     const result = await checkSession(guru, '_accessToken=synthetic', undefined, async () => Response.json(response));
@@ -123,19 +81,39 @@ test('PeoplePerHour vendor JSON and HTTP-200 guest envelopes distinguish real ac
   assert.equal(result.state, 'expired/logged_out'); assert.equal(calls, 1);
   assert.deepEqual(Object.keys(result).sort(), ['reason', 'state']);
 });
-test('every confirmed login/logout transition notifies immediately, with repeats deduplicated', async () => {
-  const store = new Store(':memory:', []); const sent: string[] = [];
-  try {
-    store.ensureUser('1', '1'); store.preferences('1', { subscribed: true });
-    const monitor = new Monitor(store, [], { send: async text => { sent.push(text); } }, 0);
-    for (const status of ['login_required', 'authenticated', 'login_required', 'authenticated', 'login_required'] as const) {
-      store.recordAccess('1', 'PeoplePerHour', status);
-      await monitor.tick(new AbortController().signal);
-      store.recordAccess('1', 'PeoplePerHour', status);
-      await monitor.tick(new AbortController().signal);
-    }
-    assert.equal(sent.length, 5);
-    assert.match(sent[0]!, /login required/); assert.match(sent[1]!, /signed in again/);
-    assert.match(sent[2]!, /login required/); assert.match(sent[4]!, /login required/);
-  } finally { store.close(); }
+
+test('Guru confirms logout after refresh grace when stale refresh cookies cannot renew a rejected session', async () => {
+  let calls = 0; let waits = 0; const cookie = '_accessToken=expired; _refreshToken=stale';
+  const result = await checkSession(guru, cookie, undefined, async () => { calls++; return Response.json({ Message: 'Authorization has been denied for this request.' }, { status: 401 }); }, { readCookie: () => cookie, wait: async () => { waits++; } });
+  assert.equal(result.state, 'expired/logged_out'); assert.equal(result.reason, 'api_rejected'); assert.equal(calls, 2); assert.equal(waits, 1); assert.ok(!JSON.stringify(result).includes('expired;'));
+});
+
+test('Guru refresh recovery or a changed session cookie cannot produce a false logout notice', async () => {
+  const cookie = '_accessToken=old; _refreshToken=refresh'; let calls = 0;
+  const recovered = await checkSession(guru, cookie, undefined, async (_url, init) => { calls++; return calls === 1 || init?.credentials === 'omit' ? Response.json({ Message: 'Authorization has been denied for this request.' }, { status: 401 }) : Response.json({ data: [] }); }, { readCookie: () => cookie, wait: async () => {} });
+  assert.equal(recovered.state, 'authenticated'); assert.equal(calls, 3);
+  const changing = await checkSession(guru, cookie, undefined, async () => Response.json({ Message: 'Authorization has been denied for this request.' }, { status: 401 }), { readCookie: () => '_accessToken=new; _refreshToken=refresh', wait: async () => {} });
+  assert.equal(changing.state, 'unknown');
+});
+
+test('Guru detects browser logout even when a surviving bearer token still accesses the account API', async () => {
+  let requests = 0;
+  const request: typeof fetch = async (url, init) => {
+    requests++;
+    if (String(url).endsWith('/pro/')) { assert.equal(init!.credentials, 'same-origin'); const response = new Response('<html>Log In</html>', { headers: { 'content-type': 'text/html' } }); Object.defineProperty(response, 'url', { value: guru + '/login.aspx?ReturnUrl=pro' }); Object.defineProperty(response, 'redirected', { value: true }); return response; }
+    return init!.credentials === 'omit' ? Response.json({ Message: 'Authorization has been denied for this request.' }, { status: 401 }) : Response.json({ data: [] });
+  };
+  const result = await checkSession(guru, '_accessToken=surviving-token', undefined, request, { readCookie: () => '', wait: async () => {}, verifyBrowserSession: true });
+  assert.equal(result.state, 'expired/logged_out'); assert.equal(requests, 3);
+});
+
+test('Guru protected-route redirects to consent or another origin do not falsely declare logout', async () => {
+  for (const target of [guru + '/consent', 'https://example.invalid/login.aspx']) {
+    const request: typeof fetch = async (url, init) => {
+      if (String(url).endsWith('/pro/')) { const response = new Response('Consent'); Object.defineProperty(response, 'url', { value: target }); Object.defineProperty(response, 'redirected', { value: true }); return response; }
+      return init!.credentials === 'omit' ? Response.json({ Message: 'Authorization has been denied for this request.' }, { status: 401 }) : Response.json({ data: [] });
+    };
+    const result = await checkSession(guru, '_accessToken=active', undefined, request, { readCookie: () => '', wait: async () => {}, verifyBrowserSession: true });
+    assert.equal(result.state, 'authenticated');
+  }
 });

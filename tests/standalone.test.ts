@@ -1,4 +1,4 @@
-import type { SourceProject } from '../src/sources/types.js';
+import type { SourceProject } from '../extension/shared/types.js';
 import type { ProjectDetails } from '../extension/src/detail-extractor.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -191,17 +191,17 @@ test('jobs-page reminders respect platform state, scanning, filters and private 
   const a = harness('7'); const b = harness('8'); await a.connect(); await b.connect();
   for (const h of [a, b]) { await h.store.recordAccess('Guru', 'authenticated'); h.advance(); }
   await a.store.recordListingPresence('Guru', false); await b.store.recordListingPresence('Guru', true);
-  assert.equal(a.sent.length, 2); assert.equal(b.sent.length, 1); assert.equal(a.sent[1]!.chat_id, '7'); assert.match(a.sent[1]!.text, /https:\/\/www.guru.com\/work\//);
+  assert.equal(a.sent.length, 3); assert.equal(b.sent.length, 2); assert.equal(a.sent[2]!.chat_id, '7'); assert.match(a.sent[2]!.text, /https:\/\/www.guru.com\/work\//);
   await a.store.recordListingPresence('Guru', true); await a.store.recordAccess('Guru', 'login_required'); const before = a.sent.length;
   await a.store.recordListingPresence('Guru', false); assert.equal(a.sent.length, before);
-  await b.store.setScanning(false); await b.store.recordListingPresence('Guru', false); assert.equal(b.sent.length, 1);
-  await b.store.setScanning(true); await b.seed({ ...b.data, selectedPlatforms: ['PeoplePerHour'] }); await b.store.recordListingPresence('Guru', false); assert.equal(b.sent.length, 1);
+  await b.store.setScanning(false); await b.store.recordListingPresence('Guru', false); assert.equal(b.sent.length, 2);
+  await b.store.setScanning(true); await b.seed({ ...b.data, selectedPlatforms: ['PeoplePerHour'] }); await b.store.recordListingPresence('Guru', false); assert.equal(b.sent.length, 2);
 });
 
 test('queued jobs-page reminder is suppressed when a listing opens before its rate-limit retry', async () => {
   const h = harness(); await h.connect(); await h.store.recordAccess('Guru', 'authenticated'); h.advance(); h.fail('rate');
   await h.store.recordListingPresence('Guru', false); assert.equal(h.data.notices.at(-1)!.delivery.state, 'pending');
-  await h.store.recordListingPresence('Guru', true); h.advance(12000); await h.store.pulse(); assert.equal(h.sent.length, 1); assert.equal(h.data.notices.at(-1)!.delivery.state, 'suppressed');
+  await h.store.recordListingPresence('Guru', true); h.advance(12000); await h.store.pulse(); assert.equal(h.sent.length, 2); assert.equal(h.data.notices.at(-1)!.delivery.state, 'suppressed');
 });
 
 test('later publication metadata can recover a missed new project on either platform without resetting first detection or baseline', async () => {
@@ -243,7 +243,7 @@ test('detail enrichment skips baselines, persists complete metadata across resca
   h.fail('rate'); await h.store.ingest(batch(2, h.now - 60000)); assert.equal(reads, 1); assert.equal(h.sent.length, 1);
   const shorter = batch(2, h.now - 60000); await h.store.ingest(shorter);
   h.restart(); h.advance(31000); await h.store.pulse(); assert.equal(reads, 1); assert.equal(h.sent.length, 2);
-  for (const value of ['Budget: $250', 'Category: Design', 'Skills: Video Editing', 'Complete project description', 'Client rating: 100%', 'Client reviews: 10', 'Client joined: January 2024']) assert.ok(h.sent[1]!.text.includes(value), value);
+  for (const value of ['Budget: $250', 'Category: Design', 'Skills: Video Editing', 'Client rating: 100%', 'Client reviews: 10', 'Client joined: January 2024']) assert.ok(h.sent[1]!.text.includes(value), value);
   await h.store.ingest(shorter); assert.equal(h.sent.length, 2);
 });
 
@@ -253,4 +253,21 @@ test('detail failure does not suppress the new project alert and is not repeated
   assert.equal(h.sent.length, 2); assert.equal(reads, 1); assert.match(h.sent[1]!.text, /Client joined: Not provided/);
   assert.match((await h.store.status()).monitoringIssue, /details could not be read/);
   h.restart(); h.advance(31000); await h.store.pulse(); assert.equal(reads, 1); assert.equal(h.sent.length, 2);
+});
+
+test('several projects found in one scan are delivered promptly rather than queued thirty seconds apart', async () => {
+  let lookups = 0; const h = harness('7', '', async () => { lookups++; return { budget: '$250' }; });
+  await h.connect(); await h.store.ingest(batch(1, h.now)); h.advance(10 * 60000); const started = h.now;
+  const burst = batch(2, h.now - 60000); burst.projects.push(...batch(3, h.now - 60000).projects, ...batch(4, h.now - 60000).projects);
+  await h.store.ingest(burst); assert.equal(h.sent.length, 4); assert.equal(lookups, 3); assert.ok(h.now - started < 5000);
+  assert.ok(h.sent.slice(1).every(message => !message.text.includes('Description:')));
+});
+
+test('upgrading an already signed-in Guru session refreshes its status and missing-page reminder once without resetting history', async () => {
+  const h = harness(); await h.connect(); await h.store.ingest(batch(1, h.now));
+  const old = h.data; old.access.Guru = { status: 'authenticated', generation: 1 }; old.listingLocations = { Guru: { available: false, generation: 1, accessGeneration: 1, epoch: old.connection!.epoch } }; delete old.guruSessionProbeVersion;
+  await h.seed(old); h.advance(); await h.store.recordAccess('Guru', 'authenticated'); await h.store.recordListingPresence('Guru', false);
+  assert.equal(h.sent.length, 3); assert.match(h.sent[1]!.text, /Guru: signed in\./); assert.match(h.sent[2]!.text, /https:\/\/www.guru.com\/work\//);
+  assert.equal(h.data.seen['PeoplePerHour:1'], true); assert.deepEqual(h.data.baselines, ['PeoplePerHour']);
+  h.restart(); await h.store.recordAccess('Guru', 'authenticated'); await h.store.recordListingPresence('Guru', false); assert.equal(h.sent.length, 3);
 });

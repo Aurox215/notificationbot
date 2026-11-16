@@ -1,5 +1,5 @@
-﻿import { canonicalProject } from '../../src/ingestion/identity.js';
-import type { Platform } from '../../src/sources/types.js';
+﻿import { canonicalProject } from '../shared/identity.js';
+import type { Platform } from '../shared/types.js';
 import { DiagnosticError } from './diagnostics.js';
 import { extractProjectDetails, type ProjectDetails } from './detail-extractor.js';
 import { inertDocument } from './polling.js';

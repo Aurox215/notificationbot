@@ -1,11 +1,11 @@
 import type { ProjectDetails } from './detail-extractor.js';
-import { listingPlatform } from '../../src/ingestion/identity.js';
+import { listingPlatform } from '../shared/identity.js';
 import { listingScope, listingUrlPage } from './listing-evidence.js';
-import { validateScan } from '../../src/ingestion/schema.js';
-import { publishedAfter } from '../../src/domain/publication.js';
-import { formatAlert } from '../../src/domain/project.js';
-import { matchesKeywords } from '../../src/filtering/keywords.js';
-import { platforms, type Platform, type SourceProject } from '../../src/sources/types.js';
+import { validateScan } from '../shared/schema.js';
+import { publishedAfter } from '../shared/publication.js';
+import { formatAlert } from '../shared/project.js';
+import { matchesKeywords } from '../shared/keywords.js';
+import { platforms, type Platform, type SourceProject } from '../shared/types.js';
 import { DiagnosticError } from './diagnostics.js';
 import { DirectTelegram, DirectTelegramError, SHARED_BOT_USERNAME } from './direct-telegram.js';
 export interface Delivery { state: 'pending' | 'sending' | 'sent' | 'unknown' | 'failed' | 'suppressed'; attempts: number; retryAt: number }
@@ -18,6 +18,8 @@ export interface StandaloneData {
   pending?: { chatId: string; code: string; expiresAt: number; failures: number; delivery: Delivery; auto?: boolean; nextAttemptAt?: number; confirmedAt?: number };
   keywords: string[]; selectedPlatforms: Platform[]; paused: boolean; scanEnabled: boolean;
   projects: Record<string, ProjectRecord>; seen: Record<string, true>; baselines: Platform[]; baselineAt: Partial<Record<Platform, number>>;
+  guruSessionProbeVersion?: number;
+  authenticationIssues?: Partial<Record<Platform, string>>;
   nextDetailAt?: Partial<Record<Platform, number>>; detailIssues?: Partial<Record<Platform, string>>;
   monitoringIssues?: Partial<Record<Platform, string>>;
   listingLocations?: Partial<Record<Platform, { available: boolean; generation: number; accessGeneration: number; epoch: string }>>;
@@ -92,7 +94,7 @@ export class StandaloneStore {
       baselineReady: Object.fromEntries(platforms.map(platform => [platform, data.baselines.includes(platform)])),
       scanningEnabled: data.scanEnabled, preferences: { keywords: data.keywords, platforms: data.selectedPlatforms, paused: data.paused },
       platformAccess: data.access, lastError: data.lastError,
-      monitoringIssue: data.scanEnabled && !data.paused ? data.selectedPlatforms.flatMap(platform => [data.monitoringIssues?.[platform], data.detailIssues?.[platform]]).filter(Boolean).join(' ') : '',
+      monitoringIssue: data.scanEnabled && !data.paused ? data.selectedPlatforms.flatMap(platform => [data.authenticationIssues?.[platform], data.monitoringIssues?.[platform], data.detailIssues?.[platform]]).filter(Boolean).join(' ') : '',
     };
   }
   status() { return this.run(async data => this.publicStatus(data)); }
@@ -147,7 +149,7 @@ export class StandaloneStore {
   ingest(input: unknown) {
     return this.run(async data => {
       if (!data.connection || !data.scanEnabled) return { accepted: false, detail: 'Connect Telegram and enable scanning first.' };
-      const raw = input as { platform?: Platform; pageUrl?: string; projects?: unknown[]; listing?: import('../../src/ingestion/schema.js').ListingEvidence };
+      const raw = input as { platform?: Platform; pageUrl?: string; projects?: unknown[]; listing?: import('../shared/schema.js').ListingEvidence };
       const evidence = raw?.listing;
       const validScope = typeof raw?.pageUrl === 'string' && listingPlatform(raw.pageUrl) === raw.platform;
       const confirmed = validScope && evidence?.version === 1 && (evidence.source === 'dom' || (evidence.source === 'html' && data.baselines.includes(raw.platform!))) && evidence.settled === true && evidence.page === 'first' && listingUrlPage(raw.pageUrl!) === 'first' && evidence.scope === listingScope(raw.pageUrl!);
@@ -180,16 +182,30 @@ export class StandaloneStore {
   recordAccess(platform: Platform, status: Access['status']) {
     return this.run(async data => {
       if (!platforms.includes(platform) || !['authenticated', 'login_required', 'verification_required'].includes(status)) return;
+      const firstGuruProof = platform === 'Guru' && status === 'authenticated' && data.guruSessionProbeVersion !== 1;
+      if (firstGuruProof) {
+        data.guruSessionProbeVersion = 1;
+        if (data.listingLocations) delete data.listingLocations.Guru;
+        for (const notice of data.notices) if (notice.platform === 'Guru' && notice.kind === 'listing' && notice.delivery.state === 'pending') notice.delivery.state = 'suppressed';
+      }
       const previous = data.access[platform];
       if (status === 'verification_required' && previous?.status === 'login_required') return;
       const changed = previous?.status !== status;
       const generation = (previous?.generation ?? 0) + (changed ? 1 : 0);
       data.access[platform] = { status, generation };
-      if (changed && data.connection && (status === 'login_required' || (status === 'authenticated' && previous?.status === 'login_required'))) {
-        data.notices.push({ text: status === 'login_required' ? `${platform}: login required. Sign in normally in your browser.` : `${platform}: signed in again. Monitoring can resume; your preferences still apply.`,
+      if ((changed || firstGuruProof) && data.connection && (status === 'login_required' || (status === 'authenticated' && (previous?.status === 'login_required' || firstGuruProof)))) {
+        data.notices.push({ text: status === 'login_required' ? `${platform}: login required. Sign in normally in your browser.` : previous?.status === 'login_required' ? `${platform}: signed in again. Monitoring can resume; your preferences still apply.` : `${platform}: signed in. Keep the jobs page open to monitor new projects.`,
           chatId: data.connection.chatId, epoch: data.connection.epoch, platform, generation, delivery: delivery() });
       }
       await this.persistence.write(data); await this.drain(data);
+    });
+  }
+  recordAuthenticationIssue(platform: Platform, detail: string) {
+    return this.run(async data => {
+      if (!platforms.includes(platform)) return;
+      const issues = data.authenticationIssues ??= {};
+      if (detail) issues[platform] = detail; else delete issues[platform];
+      await this.persistence.write(data);
     });
   }
   recordMonitoringIssue(platform: Platform, detail: string) {
@@ -290,8 +306,9 @@ export class StandaloneStore {
       const item = record.deliveries[data.connection.chatId] ??= delivery();
       if (due(item)) {
         if (this.enrich && record.detailsCheckedAt === undefined) {
-          if ((data.nextDetailAt?.[project.platform] ?? 0) > this.now()) continue;
-          record.detailsCheckedAt = this.now(); (data.nextDetailAt ??= {})[project.platform] = this.now() + 30000;
+          const detailDelay = Math.min(1100, Math.max(0, (data.nextDetailAt?.[project.platform] ?? 0) - this.now()));
+          if (detailDelay) await this.wait(detailDelay);
+          record.detailsCheckedAt = this.now(); (data.nextDetailAt ??= {})[project.platform] = this.now() + 1100;
           await this.persistence.write(data);
           try {
             const details = await this.enrich(project); record.enrichedDetails = details;

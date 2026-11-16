@@ -1,6 +1,6 @@
-﻿import type { ExtractedProject } from '../../src/ingestion/schema.js';
-import type { Platform } from '../../src/sources/types.js';
-import { canonicalProject } from '../../src/ingestion/identity.js';
+﻿import type { ExtractedProject } from '../shared/schema.js';
+import type { Platform } from '../shared/types.js';
+import { canonicalProject } from '../shared/identity.js';
 import { visible } from './extractor.js';
 export type ProjectDetails = Pick<ExtractedProject, 'budget' | 'category' | 'skills' | 'description' | 'client'>;
 const text = (el: Element | null | undefined) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();

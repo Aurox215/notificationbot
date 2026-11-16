@@ -1,5 +1,6 @@
+import { checkGuruSession } from './guru-session.js';
 import { extractProjectDetails } from './detail-extractor.js';
-import { canonicalProject } from '../../src/ingestion/identity.js';
+import { canonicalProject } from '../shared/identity.js';
 import { fetchProjectDetails } from './detail-fetch.js';
 import { extractProjects } from './extractor.js';
 import type { Extraction } from './extractor.js';
@@ -7,7 +8,7 @@ import { structureReport } from './structure-report.js';
 import { pollListing } from './polling.js';
 import { checkSession, savedSearchConfiguration } from './session-check.js';
 let lastSessionCheck = 0;
-let sessionObservation: Awaited<ReturnType<typeof checkSession>> = { state: 'unknown', reason: 'unverified' };
+let sessionObservation: Awaited<ReturnType<typeof checkGuruSession>> = { state: 'unknown', reason: 'unverified' };
 let sessionPending: Promise<typeof sessionObservation> | undefined;
 async function verifySession(force = false) {
   if (sessionPending) return sessionPending;
@@ -23,7 +24,7 @@ async function verifySession(force = false) {
         else configuration = savedSearchConfiguration(location.origin, [sessionStorage.getItem('aurox-session-probe') ?? '']);
       } catch { /* Discovery may be unavailable; leave state unknown. */ }
     }
-    sessionObservation = await checkSession(location.origin, location.origin === 'https://www.guru.com' ? document.cookie : '', configuration);
+    sessionObservation = location.origin === 'https://www.guru.com' ? await checkGuruSession(document.cookie, () => document.cookie) : await checkSession(location.origin, '', configuration);
     lastSessionCheck = Date.now();
     return sessionObservation;
   })();

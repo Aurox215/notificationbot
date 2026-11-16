@@ -30,10 +30,6 @@ export function formatAlert(alert: ProjectAlert): string {
     'Client reviews: ' + (alert.client?.reviewCount ?? 'Not provided'),
     'Client joined: ' + field(alert.client?.joinedAt, 150)];
   if (alert.client?.ratingCount !== undefined) lines.push('Client ratings: ' + alert.client.ratingCount);
-  // Reserve every required field, the complete source link and detection time before allocating description space.
   const url = alert.url && alert.url.length <= 1000 && /^https?:\/\//i.test(alert.url) ? alert.url : undefined;
-  const tail = [url, 'Detected: ' + alert.detectedAt.toISOString()].filter(Boolean).join('\n\n');
-  const heading = lines.join('\n') + '\n\nDescription: ';
-  const descriptionBudget = Math.max(0, 4096 - heading.length - tail.length - 2);
-  return heading + field(alert.description, descriptionBudget) + '\n\n' + tail;
+  return [lines.join('\n'), url, 'Detected: ' + alert.detectedAt.toISOString()].filter(Boolean).join('\n\n');
 }

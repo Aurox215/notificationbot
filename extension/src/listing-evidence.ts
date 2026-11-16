@@ -1,4 +1,4 @@
-import type { ListingEvidence } from '../../src/ingestion/schema.js';
+import type { ListingEvidence } from '../shared/schema.js';
 export function listingScope(value: string): string {
   const url = new URL(value); url.hash = ''; url.searchParams.sort(); return url.href;
 }

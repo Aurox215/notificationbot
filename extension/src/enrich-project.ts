@@ -1,6 +1,6 @@
-import { canonicalProject } from '../../src/ingestion/identity.js';
-﻿import type { SourceProject } from '../../src/sources/types.js';
-import { validateScan } from '../../src/ingestion/schema.js';
+import { canonicalProject } from '../shared/identity.js';
+﻿import type { SourceProject } from '../shared/types.js';
+import { validateScan } from '../shared/schema.js';
 import type { ProjectDetails } from './detail-extractor.js';
 import { DiagnosticError } from './diagnostics.js';
 export async function enrichProject(project: SourceProject): Promise<ProjectDetails> {

@@ -1,5 +1,5 @@
 import { listingPlatform, canonicalProject } from './identity.js';
-import type { Platform, SourceProject } from '../sources/types.js';
+import type { Platform, SourceProject } from './types.js';
 
 export interface ExtractedProject {
   sourceId: string; url: string; title: string; budget?: string; description?: string;
