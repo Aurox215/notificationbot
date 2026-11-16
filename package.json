@@ -14,7 +14,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p extension/tsconfig.json",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "telegram:test": "npm run build && node dist/src/cli/test-telegram.js",
-    "telegram:preview": "npm run build && node dist/src/cli/test-telegram.js --dry-run"
+    "telegram:preview": "npm run build && node dist/src/cli/test-telegram.js --dry-run",
+    "extension:package": "npm run extension:build && node scripts/package-extension.mjs",
+    "extension:export-settings": "node scripts/export-extension-settings.mjs"
   },
   "keywords": [],
   "author": "",

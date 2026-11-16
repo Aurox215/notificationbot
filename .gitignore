@@ -19,3 +19,8 @@ client_secret*.json
 *.sqlite.lock
 *.sqlite3.lock
 *.db.lock
+
+# Shared-bot private build inputs and configured distribution output
+extension/config.private.json
+release/
+*.aurox-settings.json

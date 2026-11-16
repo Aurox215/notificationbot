@@ -51,3 +51,8 @@ test('connection cutoff filters first scan and later old pages, persists and res
     assert.equal(store.browserProjects('1').length, 1);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('abbreviated posting ages and Guru quote suffixes preserve the conservative cutoff', () => {
+  for (const value of ['7 mins ago', 'Posted 7 mins ago \u00b7 2 Quotes Received', '7 minutes ago | 1 proposal', '7 mins ago 1 proposal']) assert.equal(publishedAfter(value, detectedAt, cutoff), true, value);
+  for (const value of ['Posted 9 mins ago \u00b7 2 Quotes Received', 'just now', 'description says 7 mins ago']) assert.equal(publishedAfter(value, detectedAt, cutoff), false, value);
+});

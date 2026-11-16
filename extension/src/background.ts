@@ -1,3 +1,4 @@
+// Retained worker for the optional backend build.
 import type { Extraction } from './extractor.js';
 import { listingPlatform } from '../../src/ingestion/identity.js';
 import { DiagnosticError, diagnostic, httpFailure } from './diagnostics.js';
@@ -30,7 +31,9 @@ function failedState(state: ScanState, error: unknown): ScanState {
   return { ...state, status: failure.code, stage: failure.stage, detail: failure.message,
     ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }) };
 }
-const ready = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(() => chrome.storage.local.remove('pairing'));
+const ready = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(async () => {
+  await chrome.storage.local.remove('pairing');
+});
 const busy = new Set<number>();
 const checkingAuth = new Set<string>();
 const pendingAuth = new Map<string, Pick<chrome.tabs.Tab, 'id' | 'url'>>();
@@ -250,6 +253,8 @@ chrome.webRequest?.onCompleted.addListener(details => {
 }, { urls: ['https://www.peopleperhour.com/*', 'https://www.guru.com/*'], types: ['xmlhttprequest'] });
 chrome.alarms?.onAlarm.addListener(alarm => { if (alarm.name === scanAlarm) void scanLoadedTabs(true); });
 void syncAlarm().catch(() => {});
+chrome.runtime.onStartup?.addListener(() => { void syncAlarm(); void scanLoadedTabs(true); });
+chrome.runtime.onInstalled?.addListener(() => { void syncAlarm(); });
 
 async function handle(message: { type?: string; extraction?: Extraction }, sender: chrome.runtime.MessageSender) {
   await ready;
@@ -303,7 +308,7 @@ async function handle(message: { type?: string; extraction?: Extraction }, sende
   }
   if (message.type === 'DISCONNECT') {
     const current = (await chrome.storage.local.get('accountSession')).accountSession as Session | undefined;
-    try { if (current) await api('/v1/session', 'DELETE', undefined, current.token); }
+    try { if (current) await api('/v1/session', 'DELETE', undefined, current?.token); }
     finally { await chrome.storage.local.remove(['accountSession', 'pendingLink', 'authenticationIssue']); await clearScans(); await syncAlarm(); }
     return { disconnected: true };
   }
@@ -346,7 +351,7 @@ async function handle(message: { type?: string; extraction?: Extraction }, sende
       monitoringDetail: currentMonitoring,
       platformAuthentication,
       confirmationCode: pending && pending.expiresAt > Date.now() ? pending.confirmationCode : null,
-      count: 0, lastSuccess: null, lastAttempt: null, status: 'not_scanned', stage: 'idle', detail: 'Scan Now or watch for visible card changes.',
+      count: 0, lastSuccess: null, lastAttempt: null, status: 'not_scanned', stage: 'idle', detail: 'Keep the supported jobs tabs open; scanning runs in the background.',
       ...data[key] as object,
       ...(connectionFailure?.code === 'authentication_expired' ? { status: connectionFailure.code, stage: connectionFailure.stage, detail: connectionFailure.message } : {}),
       connected: Boolean(current), scanningEnabled: Boolean(current && (await chrome.storage.local.get('scanEnabled')).scanEnabled !== false), refreshEnabled: false, pollingIntervalSeconds: 30, developerDiagnostics: __AUROX_DEV_DIAGNOSTICS__, connection, connectionStatus: connectionFailure?.code ?? (current ? 'connected' : 'not_connected'),

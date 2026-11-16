@@ -1,3 +1,6 @@
+import { extractProjectDetails } from './detail-extractor.js';
+import { canonicalProject } from '../../src/ingestion/identity.js';
+import { fetchProjectDetails } from './detail-fetch.js';
 import { extractProjects } from './extractor.js';
 import type { Extraction } from './extractor.js';
 import { structureReport } from './structure-report.js';
@@ -27,8 +30,23 @@ async function verifySession(force = false) {
   try { return await sessionPending; } finally { sessionPending = undefined; }
 }
 declare const __AUROX_DEV_DIAGNOSTICS__: boolean;
+let stableSnapshot = '';
+let stableSince = 0;
+let settleTimer: ReturnType<typeof setTimeout> | undefined;
 function extractSafely(): Extraction {
-  try { return extractProjects(document, location.href); }
+  try {
+    const result = extractProjects(document, location.href);
+    if (result.payload?.listing) {
+      const fingerprint = JSON.stringify([result.payload.pageUrl, result.payload.projects]);
+      if (fingerprint !== stableSnapshot) { stableSnapshot = fingerprint; stableSince = Date.now(); }
+      result.payload.listing.settled = Date.now() - stableSince >= 1500;
+      if (!result.payload.listing.settled && document.readyState === 'complete') {
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => { lastSubmitted = ''; void scanVisible(); }, 1600);
+      }
+    }
+    return result;
+  }
   catch { return { status: 'extraction_failed', detail: 'Content script received the scan, but reading the page failed. No project data was submitted. Reload the listing page and try again.' }; }
 }
 let lastSubmitted = '';
@@ -65,6 +83,14 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     void verifySession(message.force === true).then(authentication => reply({ authentication })).catch(() => reply({ authentication: { state: 'unknown', reason: 'unverified' } }));
     return true;
   }
+  if (message?.type === 'PROJECT_DETAIL') {
+    const platform = location.origin === 'https://www.peopleperhour.com' ? 'PeoplePerHour' : 'Guru';
+    if (canonicalProject(location.href, platform)?.sourceId === String(message.sourceId ?? '') && canonicalProject(String(message.url ?? ''), platform)?.sourceId === String(message.sourceId ?? '')) {
+      const details = extractProjectDetails(document, location.href, platform, String(message.sourceId)); reply({ ok: Boolean(details), details }); return;
+    }
+    void fetchProjectDetails(String(message.url ?? ''), location.origin, platform, String(message.sourceId ?? '')).then(details => reply({ ok: true, details }), () => reply({ ok: false }));
+    return true;
+  }
   if (message?.type === 'SCAN_PAGE') reply(extractSafely());
   if (message?.type === 'POLL_PAGE') {
     void chrome.runtime.sendMessage({ type: 'GET_SCAN_STATE' }).then(async state => {
@@ -81,6 +107,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message?.type === 'SCAN_STATE_CHANGED') {
     enabled = Boolean(message.enabled);
     if (timer) clearTimeout(timer);
+    if (!enabled && settleTimer) clearTimeout(settleTimer);
     if (enabled) { lastSubmitted = ''; schedule(); }
   }
 });

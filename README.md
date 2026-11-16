@@ -1,3 +1,5 @@
+> **The default extension now runs without a backend.** Distribute a personal release created with `node scripts/package-extension.mjs --chat-id USER_CHAT_ID` after building. Users click Connect and press Start; no chat-ID entry is needed in personal builds. Private installations share @Aurox_notification_bot and keep independent local chat IDs. No extension polls Telegram updates. See [standalone installation and usage](extension/README.md). The server instructions below apply only to the optional backend build.
+
 # Aurox Job Monitor
 
 Receive Telegram alerts for freelance projects detected in **your own Chrome browser**.

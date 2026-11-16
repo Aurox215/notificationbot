@@ -1,7 +1,7 @@
 import { extractProjects, type Extraction } from './extractor.js';
 import { listingPlatform } from '../../src/ingestion/identity.js';
 
-function inertDocument(html: string): Document {
+export function inertDocument(html: string): Document {
   // Template contents are inert. Strip executable/resource elements before creating
   // the detached document; parsing must not run scripts or load tracking resources.
   const template = document.createElement('template');
@@ -46,8 +46,8 @@ export async function pollListing(pageUrl: string, request: typeof fetch = fetch
     }
     const bytes = new Uint8Array(size); let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    const result = extractProjects(parse(new TextDecoder().decode(bytes)), pageUrl);
-    if (result.status === 'no_projects') return { ...result, status: 'poll_unsupported', detail: 'Background HTML contains no extractable project cards. It may require JavaScript rendering or updated selectors. Live DOM observation remains active; no page reload or private API fallback was attempted.' };
+    const result = extractProjects(parse(new TextDecoder().decode(bytes)), pageUrl, 'html');
+    if (result.status === 'no_projects' && result.payload?.listing?.completeness !== 'empty') return { ...result, status: 'poll_unsupported', detail: 'Background HTML contains no extractable project cards. It may require JavaScript rendering or updated selectors. Live DOM observation remains active; no page reload or private API fallback was attempted.' };
     return result;
   } catch { return { status: 'poll_failed', detail: 'The background HTML response could not be parsed. No page contents were sent to the backend.' }; }
 }

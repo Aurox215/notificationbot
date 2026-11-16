@@ -1,0 +1,18 @@
+﻿<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Aurox Job Monitor</title><link rel="stylesheet" href="popup.css"></head>
+<body><h1>Aurox Job Monitor</h1>
+<p>New job alerts in Telegram.</p>
+<section id="setup">
+<p id="idHelp">1. <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer">Find my ID</a>. Click <strong>Open Telegram Desktop</strong>, then press Start or send /start to the ID helper. Copy the number beside <strong>Id</strong>.</p>
+<label id="chatLabel" for="chatId">2. Paste your Telegram account ID</label>
+<input id="chatId" aria-describedby="idHelp chatFeedback" type="text" inputmode="numeric" autocomplete="off" maxlength="16" placeholder="Example: 123456789">
+<p id="chatFeedback" role="status" aria-live="polite"></p>
+<details id="tokenSetup"><summary>Administrator setup</summary><label for="botToken">Bot token</label><input id="botToken" type="password" autocomplete="off" spellcheck="false"><p>Ask your administrator for a configured extension or the bot token.</p></details>
+</section>
+<div class="connection-actions"><button id="connect" type="button">Connect Telegram</button> <button id="disconnect" type="button">Disconnect</button></div>
+<section id="verification" hidden><p id="confirmation">Enter the code received in Telegram.</p><label for="connectionCode">Connection code</label><input id="connectionCode" type="text" maxlength="8" autocomplete="off" spellcheck="false"><button id="confirm" type="button">Confirm this chat</button></section>
+<p id="connection" role="status">Checking connection...</p>
+<div class="monitor-actions"><button id="toggle" type="button" disabled>Pause monitoring</button> <button id="check" type="button">Check connection</button></div>
+<p id="status" role="status" hidden></p>
+<p id="botAccess" hidden><a href="https://t.me/Aurox_notification_bot?start=extension" target="_blank" rel="noopener noreferrer">Allow Aurox to message me</a>: press Start (or unblock the bot), then return and click Connect Telegram again.</p>
+<script src="dist/standalone-popup.js"></script></body></html>

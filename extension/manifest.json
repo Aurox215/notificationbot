@@ -1,25 +1,26 @@
 {
   "manifest_version": 3,
   "name": "Aurox Job Monitor",
-  "version": "0.4.0",
+  "version": "0.7.6",
   "minimum_chrome_version": "120",
-  "description": "Projects from your own visible Chrome pages, delivered only to your linked Telegram account.",
+  "description": "Private standalone PeoplePerHour and Guru alerts through Aurox_notification_bot. No backend required.",
   "permissions": [
     "storage",
     "activeTab",
     "alarms",
-    "webRequest"
+    "webRequest",
+    "unlimitedStorage"
   ],
   "host_permissions": [
-    "http://127.0.0.1:4318/*",
+    "https://api.telegram.org/*",
     "https://www.peopleperhour.com/*",
     "https://www.guru.com/*"
   ],
   "background": {
-    "service_worker": "dist/background.js"
+    "service_worker": "dist/standalone-background.js"
   },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "standalone.html"
   },
   "content_scripts": [
     {
@@ -35,6 +36,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; connect-src http://127.0.0.1:4318"
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' https://api.telegram.org"
   }
 }

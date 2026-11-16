@@ -6,7 +6,8 @@ export interface ExtractedProject {
   publishedAt?: string; category?: string; skills?: string[];
   client?: { ratingScore?: string; reviewCount?: number; joinedAt?: string };
 }
-export interface ScanPayload { platform: Platform; pageUrl: string; projects: ExtractedProject[] }
+export interface ListingEvidence { version: 1; source: 'dom' | 'html'; completeness: 'complete' | 'partial' | 'empty' | 'unknown'; page: 'first' | 'later' | 'unknown'; scope: string; settled: boolean }
+export interface ScanPayload { listing?: ListingEvidence; platform: Platform; pageUrl: string; projects: ExtractedProject[] }
 
 export function validateScan(value: unknown): { platform: Platform; projects: SourceProject[] } {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_scan');

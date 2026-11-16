@@ -125,3 +125,38 @@ test('login, verification, unsupported and empty pages never produce an ingestio
   const empty = parseHTML('<html><body><h1>Find jobs</h1></body></html>').document as unknown as Document;
   assert.equal(extractProjects(empty, 'https://www.guru.com/work/').status, 'no_projects');
 });
+
+test('real-style card footer ages are extracted on both platforms without sidebar links blocking completeness', () => {
+  for (const [platform, pageUrl, prefix, age] of [
+    ['PeoplePerHour', 'https://www.peopleperhour.com/freelance-jobs', '/freelance-jobs/project-', '7 minutes ago'],
+    ['Guru', 'https://www.guru.com/work/', '/jobs/project/', 'Posted 7 mins ago \u00b7 2 Quotes Received'],
+  ] as const) {
+    const { document } = parseHTML(`<html><body><nav><h2><a href="${prefix}999">Unrelated navigation project</a></h2></nav><div class="loader">Unrelated page widget</div><main><section>
+      <article class="project-card"><h2><a href="${prefix}1">Pinned older project</a></h2><footer><span>4 hours ago</span><span>7 proposals</span></footer></article>
+      <article class="project-card"><h2><a href="${prefix}2">New project</a></h2><p class="description">We reviewed a proposal 12 minutes ago.</p><footer><span>${age}</span></footer></article>
+    </section></main></body></html>`);
+    Object.defineProperty(document, 'readyState', { value: 'complete' });
+    for (const source of ['dom', 'html'] as const) {
+      const result = extractProjects(document as unknown as Document, pageUrl, source);
+      assert.equal(result.status, 'ok', platform); assert.equal(result.payload!.projects.length, 2);
+      assert.equal(result.payload!.projects[1]!.publishedAt, age); assert.equal(result.payload!.listing!.completeness, 'complete');
+    }
+  }
+});
+
+test('unknown publication text in descriptions cannot become a publication timestamp', () => {
+  const { document } = parseHTML('<html><body><article class="project-card"><h2><a href="/freelance-jobs/project-2">Project</a></h2><p class="description"><span>7 minutes ago</span></p></article></body></html>');
+  assert.equal(extractProjects(document as unknown as Document, 'https://www.peopleperhour.com/freelance-jobs').payload!.projects[0]!.publishedAt, undefined);
+});
+
+test('publication reader includes sibling footers outside an inner card without borrowing another project age', () => {
+  for (const [url, prefix] of [['https://www.peopleperhour.com/freelance-jobs', '/freelance-jobs/project-'], ['https://www.guru.com/work/', '/jobs/project/']] as const) {
+    const { document } = parseHTML(`<html><body><main><section>
+      <div class="outer"><div data-project-id="1"><h2><a href="${prefix}1">Pinned old project</a></h2></div><footer>4 hours ago <span>7 proposals</span></footer></div>
+      <div class="outer"><div data-project-id="2"><h2><a href="${prefix}2">New project</a></h2></div><footer><small><span>7</span> minutes ago</small><span>1 proposal</span></footer></div>
+    </section></main></body></html>`);
+    const result = extractProjects(document as unknown as Document, url, 'html');
+    assert.match(result.payload!.projects[0]!.publishedAt!, /^4 hours ago(?: 7 proposals)?$/);
+    assert.match(result.payload!.projects[1]!.publishedAt!, /^7 minutes ago/);
+  }
+});

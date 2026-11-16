@@ -17,19 +17,23 @@ export interface ProjectAlert {
 }
 
 export function formatAlert(alert: ProjectAlert): string {
-  const lines = [alert.platform, alert.title];
-  if (alert.category) lines.push(`Category: ${alert.category}`);
-  if (alert.budget) lines.push(`Budget: ${alert.budget}`);
-  if (alert.skills?.length) lines.push(`Skills: ${alert.skills.join(', ')}`);
-  if (alert.publishedAt) lines.push(`Published: ${alert.publishedAt}`);
-  if (alert.client?.ratingScore !== undefined) lines.push(`Client rating: ${alert.client.ratingScore}`);
-  if (alert.client?.ratingCount !== undefined) lines.push(`Client ratings: ${alert.client.ratingCount}`);
-  if (alert.client?.reviewCount !== undefined) lines.push(`Client reviews: ${alert.client.reviewCount}`);
-  if (alert.client?.joinedAt !== undefined) lines.push(`Client joined: ${alert.client.joinedAt}`);
-  if (alert.description) lines.push('', alert.description);
-  // Reserve space for the source link and timestamp even for long descriptions.
-  const body = lines.join('\n').slice(0, 3000);
-  // Ingestion accepts URLs up to 1000 characters. Preserve them intact so links work.
+  const field = (value: string | undefined, maximum: number): string => {
+    const text = value?.trim() || 'Not provided';
+    return text.length <= maximum ? text : text.slice(0, Math.max(0, maximum - 3)) + '...';
+  };
+  const lines = [alert.platform, field(alert.title, 400),
+    'Budget: ' + field(alert.budget, 200),
+    'Category: ' + field(alert.category, 200),
+    'Skills: ' + field(alert.skills?.filter(skill => skill.trim()).join(', '), 600),
+    'Published: ' + field(alert.publishedAt, 150),
+    'Client rating: ' + field(alert.client?.ratingScore, 60),
+    'Client reviews: ' + (alert.client?.reviewCount ?? 'Not provided'),
+    'Client joined: ' + field(alert.client?.joinedAt, 150)];
+  if (alert.client?.ratingCount !== undefined) lines.push('Client ratings: ' + alert.client.ratingCount);
+  // Reserve every required field, the complete source link and detection time before allocating description space.
   const url = alert.url && alert.url.length <= 1000 && /^https?:\/\//i.test(alert.url) ? alert.url : undefined;
-  return [body, url, `Detected: ${alert.detectedAt.toISOString()}`].filter(Boolean).join('\n\n');
+  const tail = [url, 'Detected: ' + alert.detectedAt.toISOString()].filter(Boolean).join('\n\n');
+  const heading = lines.join('\n') + '\n\nDescription: ';
+  const descriptionBudget = Math.max(0, 4096 - heading.length - tail.length - 2);
+  return heading + field(alert.description, descriptionBudget) + '\n\n' + tail;
 }

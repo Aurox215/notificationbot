@@ -1,3 +1,4 @@
+import { listingEvidence } from './listing-evidence.js';
 import { listingPlatform, canonicalProject } from '../../src/ingestion/identity.js';
 import type { ScanPayload, ExtractedProject } from '../../src/ingestion/schema.js';
 import { findProjectCard, isTitleLink } from './project-cards.js';
@@ -31,7 +32,7 @@ function field(card: Element, selectors: string, maximum: number): string | unde
   return Array.from(card.querySelectorAll(selectors)).map(el => text(el, maximum)).find(Boolean);
 }
 
-export function extractProjects(document: Document, pageUrl: string): Extraction {
+export function extractProjects(document: Document, pageUrl: string, source: 'dom' | 'html' = 'dom'): Extraction {
   let url: URL;
   try { url = new URL(pageUrl); } catch { return { status: 'unsupported', detail: 'Unsupported URL.' }; }
   if (!['www.peopleperhour.com', 'www.guru.com'].includes(url.hostname) || url.protocol !== 'https:') return { status: 'unsupported', detail: 'Open a supported listing page.' };
@@ -51,6 +52,8 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
   const platform = listingPlatform(pageUrl);
   if (!platform) return { status: 'unsupported', detail: 'Scan only /freelance-jobs or /work/ listing pages.' };
   const projects = new Map<string, ExtractedProject>();
+  const cards: Element[] = [];
+  const candidates = new Set<string>();
   const diagnostics = { linksChecked: 0, visibleProjectLinks: 0, matchedCards: 0, extractedProjects: 0 };
   for (const anchor of Array.from(document.querySelectorAll('a[href]'))) {
     diagnostics.linksChecked++;
@@ -58,6 +61,7 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
     let identity;
     try { identity = canonicalProject(new URL(anchor.getAttribute('href')!, pageUrl).href, platform); } catch { continue; }
     if (!identity) continue;
+    if (isTitleLink(anchor) && !anchor.closest('nav,aside,footer,[role="navigation"],[role="complementary"]')) candidates.add(identity.sourceId);
     diagnostics.visibleProjectLinks++;
     if (projects.has(identity.sourceId)) continue;
     const card = findProjectCard(anchor, platform, pageUrl, visible);
@@ -72,8 +76,26 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
     const budget = field(card, '.budget,.job-budget,.project-budget,.job-list-item__budget,.job-list-item__price,[data-field="budget"]', 200);
     const description = field(card, '.description,.job-description,.project-description,.job-list-item__description,.job-list-item__excerpt,[itemprop="description"],[data-field="description"]', 5000);
     const category = field(card, '.category,.job-category,[data-field="category"]', 200);
-    const publicationTime = Array.from(card.querySelectorAll('time[datetime]')).find(visible)?.getAttribute('datetime');
-    const publishedAt = publicationTime || field(card, 'time,.posted,.posted-date,.publication-time,.job-age,.job-list-item__date,.job-list-item__posted', 150);
+    // Some layouts put the title/description in an inner card and the age in a sibling footer.
+    // Expand only while every project link still identifies this same project.
+    let publicationCard = card;
+    for (let parent = card.parentElement, depth = 0; parent && depth < 3; parent = parent.parentElement, depth++) {
+      if (parent.matches('body,html,main,[role="main"],nav,aside,footer')) break;
+      const identities = Array.from(parent.querySelectorAll('a[href]')).flatMap(link => {
+        try { const value = canonicalProject(new URL(link.getAttribute('href')!, pageUrl).href, platform); return value ? [value.sourceId] : []; } catch { return []; }
+      });
+      if (identities.some(id => id !== identity!.sourceId)) break;
+      publicationCard = parent;
+    }
+    const publicationTime = Array.from(publicationCard.querySelectorAll('time[datetime]')).find(visible)?.getAttribute('datetime');
+    const publicationField = field(publicationCard, 'time,.posted,.posted-date,.publication-time,.job-age,.jobAge,.job-list-item__date,.job-list-item__posted', 150);
+    const agePattern = /^(?:Posted\s*:?\s*)?(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago(?:\s*(?:[|\u00b7\u2022]|[-\u2013\u2014]\s|\d+\s+(?:quotes?|proposals?))[^]*)?$/i;
+    // Inspect individual text nodes too: date labels need not be wrapped in spans.
+    const fallbackAge = [publicationCard, ...Array.from(publicationCard.querySelectorAll('*'))]
+      .filter(el => visible(el) && !el.closest('script,style,template,noscript,.description,.job-description,.project-description,.job-list-item__description,.job-list-item__excerpt,[itemprop="description"],[data-field="description"]'))
+      .flatMap(el => [text(el, 150) ?? '', ...Array.from(el.childNodes).filter(node => node.nodeType === 3).map(node => (node.textContent ?? '').replace(/\s+/g, ' ').trim())])
+      .find(value => agePattern.test(value));
+    const publishedAt = publicationTime || publicationField || fallbackAge;
     const skills = Array.from(card.querySelectorAll('.skill,.skills li,.job-list-item__skills li,[data-field="skill"]')).map(e => text(e, 60)).filter((s): s is string => Boolean(s)).slice(0,30);
     if (budget) project.budget = budget;
     if (description) project.description = description;
@@ -90,12 +112,16 @@ export function extractProjects(document: Document, pageUrl: string): Extraction
       project.client = { ...(ratingScore ? { ratingScore } : {}),
         ...(reviewCount !== undefined && Number.isSafeInteger(reviewCount) ? { reviewCount } : {}), ...(joinedAt ? { joinedAt } : {}) };
     }
-    projects.set(project.sourceId, project);
+    projects.set(project.sourceId, project); cards.push(card);
     if (projects.size >= 100) break;
   }
   diagnostics.extractedProjects = projects.size;
+  let listingRoot = cards[0]?.parentElement;
+  while (listingRoot && cards.some(card => !listingRoot!.contains(card))) listingRoot = listingRoot.parentElement;
+  const listing = listingEvidence(document, pageUrl, projects.size, candidates.size, visible, source, listingRoot ?? undefined);
+  if (!projects.size && listing.completeness === 'empty') return { status: 'no_projects', diagnostics, detail: 'Listing explicitly reports no projects.', payload: { platform, pageUrl: url.href, listing, projects: [] } };
   if (!projects.size) return { status: 'no_projects', diagnostics, detail: diagnostics.visibleProjectLinks > 0 ?
     'Zero projects extracted: visible project links were found, but the card/title layout was not recognized. A selector update may be needed. Nothing was submitted.' :
     'Zero supported visible project links found. Wait for normal page loading and scan again. Nothing was submitted and no baseline was created.' };
-  return { status: 'ok', diagnostics, detail: 'Visible project cards extracted.', payload: { platform, pageUrl: `${url.origin}${url.pathname}`, projects: [...projects.values()] } };
+  return { status: 'ok', diagnostics, detail: 'Visible project cards extracted.', payload: { platform, pageUrl: url.href, listing, projects: [...projects.values()] } };
 }
